@@ -523,7 +523,9 @@ function renderProject() {
   const by = (st) => s.tasks.filter(t => t.status === st).length;
   $("stats").replaceChildren(el("span", {}, el("b", {}, s.events), " events"), el("span", {}, el("b", {}, by("open")), " open"),
     el("span", {}, el("b", {}, by("taken")), " running"), el("span", {}, el("b", {}, s.leases.length), " leases"),
-    el("span", {}, el("b", {}, s.counts.refused + s.counts.denied), " refused at the gate"), el("span", {}, meText(s.me)), setLive(true));
+    el("span", {}, el("b", {}, s.counts.refused + s.counts.denied), " refused at the gate"),
+    s.sync ? el("span", {title: s.sync.error || "", class: s.sync.pulled ? "" : "err"}, s.sync.pulled ? "synced " + ago(s.sync.at, s.now) + " ago" + (s.sync.ok ? "" : " (pull only)") : "sync failing") : null,
+    el("span", {}, meText(s.me)), setLive(true));
   const banners = [];
   if (s.me && !s.me_here) banners.push(el("div", {class: "banner"}, s.me + " is not a human of this project (" + (s.humans.join(", ") || "none") + "): you can watch and apply here, not decide."));
   if (!s.me) banners.push(el("div", {class: "banner"}, "Read-only. Start it with `baton ui --actor human:<you>` to decide."));

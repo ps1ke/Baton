@@ -6,12 +6,18 @@ producing a conflict (`sync`).
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import subprocess
 import tempfile
 import time
 from pathlib import Path
+
+try:
+    import fcntl
+except ImportError:   # Windows: no cross-process lock
+    fcntl = None
 
 from . import events as ev
 from . import policy as pol
@@ -101,20 +107,81 @@ class Store:
 
     # -- git transport ------------------------------------------------------------------------------------------
     def _git(self, *args, check=True):
-        return subprocess.run(["git", "-C", str(self.home), *args], capture_output=True, text=True, check=check)
+        env = os.environ.copy()
+        if not self._git_identity():
+            # merge commits need an author; event files carry their own actor, so a neutral one is fine
+            env.update(GIT_AUTHOR_NAME="baton", GIT_AUTHOR_EMAIL="baton@localhost",
+                       GIT_COMMITTER_NAME="baton", GIT_COMMITTER_EMAIL="baton@localhost")
+        return subprocess.run(["git", "-C", str(self.home), *args], capture_output=True, text=True, check=check,
+                              env=env, stdin=subprocess.DEVNULL)
 
-    def sync(self, remote: str = "origin", branch: str = "main") -> str:
+    def _git_identity(self) -> bool:
+        if not hasattr(self, "_has_identity"):
+            r = subprocess.run(["git", "-C", str(self.home), "config", "user.email"], capture_output=True, text=True)
+            self._has_identity = bool(r.stdout.strip())
+        return self._has_identity
+
+    def is_repo(self) -> bool:
+        return (self.home / ".git").exists()
+
+    def has_remote(self, remote: str = "origin") -> bool:
+        return self.is_repo() and self._git("remote", "get-url", remote, check=False).returncode == 0
+
+    def branch(self) -> str:
+        r = self._git("symbolic-ref", "--short", "-q", "HEAD", check=False)
+        return r.stdout.strip() or "main"
+
+    @contextlib.contextmanager
+    def _lock(self):
+        """One sync at a time per log, across processes (the dashboard, a swarm and a manual `baton sync`)."""
+        path = self.home / ".git" / "baton-sync.lock"
+        with open(path, "a+") as f:
+            if fcntl:
+                fcntl.flock(f, fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                if fcntl:
+                    fcntl.flock(f, fcntl.LOCK_UN)
+
+    def sync(self, remote: str = "origin", branch: str | None = None, push: bool = True) -> dict:
         """Commit new events, pull the remote's (a union: event files never conflict, so even two peers that started
-        separate histories merge cleanly) and push the result."""
-        if not (self.home / ".git").exists():
+        separate histories merge cleanly) and push the result.
+
+        Returns {"new": events that arrived, "sent": events committed here, "pushed": bool, "error": why a push
+        failed}. A pull failure raises; a push failure does not (a log you may only read still syncs one way)."""
+        if not self.is_repo():
             raise RuntimeError(f"{self.home} is not a git repository: run `git init` there and add a remote")
-        self._git("add", "events", "policy.toml")
-        if self._git("diff", "--cached", "--quiet", check=False).returncode:
-            self._git("commit", "-q", "-m", "baton: new events")
-        pull = self._git("pull", "-q", "--no-rebase", "--no-edit", "--allow-unrelated-histories", remote, branch, check=False)
-        if pull.returncode and "couldn't find remote ref" not in pull.stderr:
-            raise RuntimeError(pull.stderr.strip() or "git pull failed")
-        push = self._git("push", "-q", remote, f"HEAD:{branch}", check=False)
-        if push.returncode:
-            raise RuntimeError(push.stderr.strip() or "git push failed")
-        return "synced"
+        branch = branch or self.branch()
+        with self._lock():
+            before = set(self.read()[0])
+            ignore = self.dir / ".gitignore"
+            if not ignore.exists():
+                self.dir.mkdir(parents=True, exist_ok=True)
+                ignore.write_text(".tmp-*\n", encoding="utf-8")
+            self._git("add", "--", "events", *(["policy.toml"] if (self.home / "policy.toml").exists() else []))
+            staged = self._git("diff", "--cached", "--name-only", check=False).stdout.split()
+            sent = sum(1 for f in staged if f.endswith(".json"))
+            if staged:
+                self._git("commit", "-q", "-m", f"baton: {sent} new event(s)")
+            self._pull(remote, branch)
+            pushed, error = False, None
+            if push:
+                for _ in range(3):
+                    r = self._git("push", "-q", remote, f"HEAD:{branch}", check=False)
+                    if r.returncode == 0:
+                        pushed = True
+                        break
+                    error = r.stderr.strip() or "git push failed"
+                    if "fetch first" not in error and "non-fast-forward" not in error and "rejected" not in error:
+                        break
+                    self._pull(remote, branch)   # someone pushed in between: take theirs and try again
+                if pushed:
+                    error = None
+            new = len(set(self.read()[0]) - before)
+            return {"new": new, "sent": sent, "pushed": pushed, "error": error}
+
+    def _pull(self, remote, branch):
+        r = self._git("pull", "-q", "--no-rebase", "--no-edit", "--allow-unrelated-histories", remote, branch, check=False)
+        if r.returncode and "couldn't find remote ref" not in r.stderr:
+            raise RuntimeError(r.stderr.strip() or "git pull failed")

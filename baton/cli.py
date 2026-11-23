@@ -304,7 +304,7 @@ def cmd_ui(a):
     from . import ui
     from .workspace import Workspace
     ui.serve(Workspace(), a.actor or os.environ.get("BATON_ACTOR"), port=a.port, open_browser=not a.no_open,
-             extra_home=Path(a.home))
+             extra_home=Path(a.home), sync_every=pol.duration(a.sync) if a.sync else None)
     return 0
 
 
@@ -481,7 +481,19 @@ def cmd_workspace(a):
 
 
 def cmd_sync(a):
-    print(_store(a).sync(a.remote, a.branch))
+    from . import sync
+    store = _store(a)
+    if not a.every:
+        st = sync.sync_once(store, a.remote, a.branch)
+        print(sync.describe(str(store.home.resolve()), st))
+        return 0 if st["ok"] else 1
+    s = sync.Syncer([store.home], pol.duration(a.every), a.remote, a.branch,
+                    log=lambda line: print(time.strftime("%H:%M:%S ") + line, flush=True))
+    print(f"syncing {store.home} with {a.remote} every {a.every} (Ctrl-C to stop)", flush=True)
+    try:
+        s.run()
+    except KeyboardInterrupt:
+        pass
     return 0
 
 
@@ -568,9 +580,11 @@ def main(argv=None) -> int:
     p.add_argument("command", nargs=argparse.REMAINDER); p.set_defaults(fn=cmd_workspace)
     p = sub.add_parser("ui", help="a local dashboard; approve and reject from the browser")
     p.add_argument("--port", type=int, default=8765); p.add_argument("--no-open", action="store_true")
+    p.add_argument("--sync", help="also sync every local log that has a git remote this often, e.g. 15s")
     p.set_defaults(fn=cmd_ui)
-    p = sub.add_parser("sync"); p.add_argument("--remote", default="origin"); p.add_argument("--branch", default="main")
-    p.set_defaults(fn=cmd_sync)
+    p = sub.add_parser("sync", help="exchange events with the log's git remote (once, or --every 15s)")
+    p.add_argument("--remote", default="origin"); p.add_argument("--branch", help="default: the current branch")
+    p.add_argument("--every", help="keep syncing at this interval, e.g. 15s"); p.set_defaults(fn=cmd_sync)
     a = ap.parse_args(argv)
     try:
         return a.fn(a)

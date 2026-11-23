@@ -25,6 +25,7 @@ from urllib.parse import urlparse
 
 from . import forge
 from . import manifest as mf
+from . import sync
 from .store import Store
 from .workspace import Workspace, manifest_of, volunteer
 
@@ -138,6 +139,7 @@ def snapshot(store: Store, now: float | None = None, me: str | None = None) -> d
         "leases": leases, "proposals": proposals, "applications": applications, "feed": feed,
         "manifest": manifest_of(store, now), "join": s.join_mode,
         "roles": [{"name": r.name, "under": r.under, "model": r.model, "effort": r.effort} for r in pol.roles.values()],
+        "sync": sync.status_of(store.home),
         "messages": [_message(m) for m in list(s.messages.values())[-MESSAGES:]],
         "inbox": [m.id for m in s.inbox(me)] if me else [],
         "counts": {"refused": refused, "denied": len(s.denied), "ignored": len(s.ignored)},
@@ -360,13 +362,24 @@ def make_server(ws: Workspace, actor: str | None, host: str = "127.0.0.1", port:
 
     srv = http.server.ThreadingHTTPServer((host, port), Handler)
     srv.daemon_threads = True
+    srv.directory = directory
     return srv, token
 
 
-def serve(ws: Workspace, actor: str | None, port: int = 8765, open_browser: bool = True, extra_home: Path | None = None):
+def serve(ws: Workspace, actor: str | None, port: int = 8765, open_browser: bool = True, extra_home: Path | None = None,
+          sync_every: float | None = None):
     srv, token = make_server(ws, actor, port=port, extra_home=extra_home)
     url = f"http://127.0.0.1:{srv.server_address[1]}/#token={token}"
     print(f"baton ui on {url}" + ("" if actor else "  (read-only: no --actor)"), flush=True)
+    syncer = None
+    if sync_every:
+        directory = srv.directory
+
+        def homes():
+            return [e["home"] for e in directory.entries()[0] if e.get("home")]
+
+        syncer = sync.Syncer(homes, sync_every, log=lambda line: print(time.strftime("%H:%M:%S ") + line, flush=True)).start()
+        print(f"syncing local logs with their git remotes every {sync_every:g}s", flush=True)
     if open_browser:
         threading.Timer(0.3, lambda: webbrowser.open(url)).start()
     try:
@@ -374,4 +387,6 @@ def serve(ws: Workspace, actor: str | None, port: int = 8765, open_browser: bool
     except KeyboardInterrupt:
         pass
     finally:
+        if syncer:
+            syncer.stop()
         srv.server_close()

@@ -199,6 +199,12 @@ The protocol needs only a way to copy event files. baton uses git: a peer commit
 files never conflict, so unrelated histories merge too) and pushes. Any other channel that delivers the files
 unchanged works, because each file proves its own content.
 
+Peers SHOULD sync continuously while agents work (baton: `baton sync --every 15s`, `baton ui --sync 15s`, or a
+running `baton swarm`), since a lease or a message only reaches other machines when the files do. A peer that may
+not push still pulls, and delivers its own events another way (section 8). A peer SHOULD back off from a remote that
+fails, and MUST NOT write partial files where the transport can pick them up (baton writes `events/.tmp-*` and
+renames; `events/.gitignore` excludes them).
+
 ## 10. Security requirements
 
 - A peer MUST NOT run a command taken from a project it did not create. In particular the agent command (`[runner]`)
