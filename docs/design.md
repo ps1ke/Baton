@@ -1,8 +1,13 @@
 # baton design
 
-## Why: what an uncoordinated swarm did to one repository
+baton coordinates any number of agents (any model, any agent program) working on one project. It assumes nothing
+about the project beyond a tree of files, and nothing about the agents beyond a command line and an exit status.
 
-Measured on one public repository in late 2026, about 68 hours after its first pull request:
+## Why: a case study
+
+What happens without such a layer was measured on one public repository that hundreds of AI agents contributed to
+(late 2026, about 68 hours after its first pull request). Nothing in baton is specific to it;
+the numbers are here because they show the failure modes at scale:
 
 | | |
 |---|---|
@@ -43,6 +48,28 @@ matches its id and is reported, not folded. An event whose parents have not arri
 Events fold in `(lamport, id)` order: every peer with the same events gets the same order, and an event always comes
 after everything its author had seen. Decisions use the *effective time* `max(ts, parents' effective times)`, so an
 event cannot be backdated before what its author already knew.
+
+### Tasks
+
+`task {title, detail, paths, topics, role, parent}` posts work to the board; roles with `plan` in their `can` list
+(by default planners and orchestrators) and humans may post. A task can be limited to one role, and can name a
+parent task, which then waits until all its subtasks have ended. `claim {task_id}` takes a task: the lease covers the
+task's paths and topics plus the topic `task:<id>`, so even a task without paths is held by one actor at a time. The
+holder ends it with `done {task, outcome, summary, evidence}`, where outcome is `done`, `failed` or `escalated`, and
+the lease is released. A task whose lease lapses without a `done` is open again for anyone.
+
+### The runner
+
+`baton run` takes the oldest open task the actor's role may take (or a named one), launches the policy's agent
+command with `{model}` and `{effort}` from the actor's tier, gives it the task prompt (in a `{prompt}` argument if the
+template has one, else on stdin), and renews the lease every third of its ttl while the agent runs. The agent inherits
+`BATON_HOME`, `BATON_ACTOR` and `BATON_TASK`, so it can call baton itself: split the task, propose an outward action,
+or report its own outcome. If it does not, the exit status decides (`0` done, anything else failed), and the evidence
+records the exit code, the run time and a digest of the output.
+
+The prompt tells the agent to stay inside its lease, to send everything outward through `propose`, to check before it
+claims something about other work, and to escalate when unsure. It is advice, not enforcement: enforcement is the
+lease and the gate, which hold whatever the agent does with them.
 
 ### Leases
 
@@ -102,11 +129,11 @@ author. `baton execute` runs an approved proposal through the forge adapter (dry
 ## Next
 
 1. Signed events and a policy carried in the log.
-2. A worker runner: launch Claude Code with the model and effort `whoami` returns, inside a sandbox, with the lease
-   renewed while it works and released when it exits.
+2. Sandboxing for the runner: an agent sees only its lease's paths, and holds no forge credentials.
 3. Verified results as first-class events (`verdict {pr, commit, command, exit, output_digest, baseline}`), so a
    review that says "tests pass" names the exact commit and command, and a claim about another PR is checked
    mechanically before it is posted.
-4. Escalation: a worker that is unsure or disagrees with another emits `escalate`, and its orchestrator, not the
-   worker, decides.
+4. Escalation routing: a task that ends `escalated` goes back to the board for the holder's orchestrator, with the
+   worker's summary, and the orchestrator decides (re-scope, re-post at a higher tier, or ask a human).
+6. Scheduling: a `baton swarm` that keeps N workers per orchestrator busy, with per-role concurrency and cost caps.
 5. Metrics from the log: duplicates refused, budget refusals, lease contention per path, cost per executed action.

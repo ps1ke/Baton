@@ -13,7 +13,7 @@ import hashlib
 import json
 from dataclasses import dataclass
 
-KINDS = frozenset({"join", "claim", "renew", "release", "propose", "approve", "reject", "executed"})
+KINDS = frozenset({"join", "task", "claim", "renew", "release", "done", "propose", "approve", "reject", "executed"})
 
 
 class BadEvent(ValueError):

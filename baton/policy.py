@@ -37,6 +37,7 @@ class Role:
     effort: str = ""
     max_children: int = 0
     can: frozenset = frozenset()
+    runner: list[str] | None = None   # overrides [runner] cmd for this role
 
 
 @dataclass
@@ -55,13 +56,28 @@ class Policy:
     auto: dict[str, frozenset] = field(default_factory=dict)   # action -> roles that skip approval
     default_ttl: float = 7200.0
     max_ttl: float = 28800.0
+    runner: list[str] = field(default_factory=list)   # the agent command template, see [runner]
+
+    def runner_for(self, role: str) -> list[str]:
+        r = self.roles.get(role)
+        return list(r.runner) if r and r.runner else list(self.runner)
 
     def role_of_kind(self, kind: str) -> str:
-        return {"claim": "claim", "renew": "claim", "release": "claim", "propose": "propose",
+        return {"claim": "claim", "renew": "claim", "release": "claim", "done": "claim", "task": "plan",
+                "propose": "propose",
                 "approve": "approve", "reject": "approve", "executed": "execute"}.get(kind, kind)
 
 
 DEFAULT = """
+# baton policy. Every peer must fold with the same file: keep it in the shared log folder.
+
+# The agent each role runs. {model} and {effort} are filled in; the task prompt goes in a "{prompt}" argument if the
+# command has one, else on stdin. BATON_HOME, BATON_ACTOR and BATON_TASK are set in its environment, so the agent can
+# call baton itself (propose, done). Any CLI agent works: swap the command for codex, aider, a script... A role can
+# override it with its own `runner = [...]`.
+[runner]
+cmd = ["claude", "-p", "--model", "{model}", "--effort", "{effort}"]
+
 [leases]
 default_ttl = "2h"
 max_ttl = "8h"
@@ -71,14 +87,14 @@ under = "human"
 model = "claude-opus-5-5"
 effort = "high"
 max_children = 4
-can = ["claim", "propose"]
+can = ["plan", "claim", "propose"]
 
 [roles.orchestrator]
 under = "planner"
 model = "claude-sonnet-5-5"
 effort = "medium"
 max_children = 6
-can = ["claim", "propose"]
+can = ["plan", "claim", "propose"]
 
 [roles.worker]
 under = "orchestrator"
@@ -116,12 +132,13 @@ def parse(text: str) -> Policy:
         if name == "human":
             raise ValueError('"human" is reserved for the actors listed in [gate] humans')
         p.roles[name] = Role(name, r.get("under"), r.get("model", ""), r.get("effort", ""),
-                             int(r.get("max_children", 0)), frozenset(r.get("can", [])))
+                             int(r.get("max_children", 0)), frozenset(r.get("can", [])), r.get("runner"))
     for role in p.roles.values():
         if role.under not in (None, "human") and role.under not in p.roles:
             raise ValueError(f"role {role.name} is under unknown role {role.under!r}")
     for action, b in raw.get("budgets", {}).items():
         p.budgets[action] = Budget(rate(b.get("per_actor")), rate(b.get("total")), bool(b.get("needs_lease", False)))
+    p.runner = list(raw.get("runner", {}).get("cmd", []))
     gate = raw.get("gate", {})
     p.humans = frozenset(gate.get("humans", []))
     p.approver_roles = frozenset(gate.get("approver_roles", []))

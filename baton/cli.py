@@ -1,7 +1,8 @@
-"""baton: a coordination layer between many agents and one shared repository.
+"""baton: coordination for many agents working on one project, peer-to-peer.
 
-Agents never talk to the forge directly: they join a tree of roles, lease the paths they work on, and propose outward
-actions, which pass rate budgets, duplicate checks and an approval gate before `execute` performs them.
+Agents join a tree of roles (each with its own model, effort and fan-out), take tasks from a shared board, lease the
+paths and topics they work on, and propose anything that leaves the machine, which passes rate budgets, duplicate
+checks and an approval gate before `execute` performs it.
 """
 
 from __future__ import annotations
@@ -15,6 +16,7 @@ from pathlib import Path
 
 from . import forge
 from . import policy as pol
+from . import runner
 from .store import Store
 
 
@@ -63,7 +65,50 @@ def cmd_join(a):
     return _emit(a, "join", {"role": a.role, "parent": a.parent})
 
 
+def cmd_task(a):
+    s = _store(a).state()
+    body = {"title": a.title, "detail": a.detail or "", "paths": a.path or [], "topics": a.topic or []}
+    if a.role:
+        body["role"] = a.role
+    if a.parent:
+        body["parent"] = _store(a).resolve(a.parent, s.tasks)
+    return _emit(a, "task", body)
+
+
+def cmd_tasks(a):
+    s = _store(a).state()
+    now = time.time()
+    for t in sorted(s.tasks.values(), key=lambda x: x.created):
+        status = s.task_status(t, now)
+        if not a.all and status in ("done", "failed"):
+            continue
+        holder = s.leases[t.lease].actor if t.lease and status == "taken" else ""
+        indent = "  " if t.parent else ""
+        print(f"{indent}{t.id[:12]} {status:9} {('[' + t.role + '] ') if t.role else ''}{t.title}"
+              + (f" <- {holder}" if holder else "") + (f" : {t.summary}" if t.summary and a.all else ""))
+    return 0
+
+
+def cmd_done(a):
+    s = _store(a).state()
+    body = {"task": _store(a).resolve(a.task_id, s.tasks), "outcome": a.outcome, "summary": a.summary or ""}
+    return _emit(a, "done", body)
+
+
+def cmd_run(a):
+    run = runner.Run(_store(a), _actor(a), a.task_id)
+    if a.dry_run:
+        print(" ".join(repr(x) if " " in x or "\n" in x else x for x in run.command()))
+        return 0
+    return 0 if run.go(timeout=pol.duration(a.timeout) if a.timeout else None) == "done" else 1
+
+
 def cmd_claim(a):
+    if a.task_id:
+        s = _store(a).state()
+        return _emit(a, "claim", {"task_id": _store(a).resolve(a.task_id, s.tasks)})
+    if not a.task:
+        sys.exit("baton: claim needs a description or --task-id")
     body = {"task": a.task, "paths": a.path or [], "topics": a.topic or []}
     if a.ttl:
         body["ttl"] = pol.duration(a.ttl)
@@ -189,7 +234,20 @@ def main(argv=None) -> int:
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("init").set_defaults(fn=cmd_init)
     p = sub.add_parser("join"); p.add_argument("role"); p.add_argument("--parent"); p.set_defaults(fn=cmd_join)
-    p = sub.add_parser("claim"); p.add_argument("task"); p.add_argument("--path", action="append")
+    p = sub.add_parser("task", help="post a task to the board"); p.add_argument("title"); p.add_argument("--detail")
+    p.add_argument("--path", action="append"); p.add_argument("--topic", action="append")
+    p.add_argument("--role", help="only this role may take it"); p.add_argument("--parent", help="split from this task")
+    p.set_defaults(fn=cmd_task)
+    p = sub.add_parser("tasks", help="the board"); p.add_argument("--all", action="store_true"); p.set_defaults(fn=cmd_tasks)
+    p = sub.add_parser("done", help="report how a task you hold ended"); p.add_argument("task_id")
+    p.add_argument("--outcome", choices=("done", "failed", "escalated"), default="done"); p.add_argument("--summary")
+    p.set_defaults(fn=cmd_done)
+    p = sub.add_parser("run", help="take a task and run the policy's agent on it")
+    p.add_argument("task_id", nargs="?", help="default: the oldest open task for your role")
+    p.add_argument("--dry-run", action="store_true", help="print the agent command and take nothing")
+    p.add_argument("--timeout", help="e.g. 30m"); p.set_defaults(fn=cmd_run)
+    p = sub.add_parser("claim"); p.add_argument("task", nargs="?"); p.add_argument("--task-id")
+    p.add_argument("--path", action="append")
     p.add_argument("--topic", action="append"); p.add_argument("--ttl"); p.set_defaults(fn=cmd_claim)
     for name, fn in (("renew", cmd_renew), ("release", cmd_release)):
         p = sub.add_parser(name); p.add_argument("lease"); p.set_defaults(fn=fn)
@@ -211,7 +269,7 @@ def main(argv=None) -> int:
     a = ap.parse_args(argv)
     try:
         return a.fn(a)
-    except (KeyError, ValueError, RuntimeError, NotImplementedError) as err:
+    except (KeyError, ValueError, LookupError, RuntimeError, NotImplementedError) as err:
         print(f"baton: {err}", file=sys.stderr)
         return 2
 

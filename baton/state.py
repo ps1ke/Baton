@@ -35,6 +35,27 @@ class Lease:
 
 
 @dataclass
+class Task:
+    id: str
+    by: str
+    title: str
+    detail: str
+    paths: tuple[str, ...]
+    topics: tuple[str, ...]
+    role: str | None             # only this role may take it
+    parent: str | None           # the task this one was split from
+    created: float
+    lease: str | None = None     # the lease that holds it now (or last held it)
+    outcome: str | None = None   # done failed escalated
+    summary: str = ""
+    evidence: dict = field(default_factory=dict)
+    subtasks: list[str] = field(default_factory=list)
+
+
+OUTCOMES = ("done", "failed", "escalated")
+
+
+@dataclass
 class Proposal:
     id: str
     actor: str
@@ -70,7 +91,28 @@ class State:
     leases: dict[str, Lease] = field(default_factory=dict)
     denied: dict[str, str] = field(default_factory=dict)        # claim event id -> why
     proposals: dict[str, Proposal] = field(default_factory=dict)
+    tasks: dict[str, Task] = field(default_factory=dict)
     ignored: dict[str, str] = field(default_factory=dict)       # event id -> why it had no effect
+
+    def task_status(self, task: Task, t: float) -> str:
+        """open, taken, or the outcome. A task whose lease lapsed without a `done` is open again."""
+        if task.outcome:
+            return task.outcome
+        lease = self.leases.get(task.lease) if task.lease else None
+        return "taken" if lease and lease.active(t) else "open"
+
+    def open_tasks(self, t: float, role: str | None = None) -> list[Task]:
+        """Tasks nobody holds, oldest first, that a `role` may take and whose scope is free right now."""
+        out = []
+        for task in sorted(self.tasks.values(), key=lambda x: x.created):
+            if self.task_status(task, t) != "open" or (role and task.role and task.role != role):
+                continue
+            if task.subtasks and any(not self.tasks[c].outcome for c in task.subtasks):
+                continue   # split into subtasks that are still running
+            if self.conflicts(task.paths, task.topics, t):
+                continue
+            out.append(task)
+        return out
 
     def active_leases(self, t: float) -> list[Lease]:
         return [l for l in self.leases.values() if l.active(t)]
@@ -160,11 +202,60 @@ class _Folder:
         if parent in self.s.actors:
             self.s.actors[parent].children.append(e.actor)
 
+    # -- tasks ------------------------------------------------------------------------------------------------
+    def on_task(self, e, t):
+        b = e.body
+        title = str(b.get("title", "")).strip()
+        if not title:
+            return self.ignore(e, "a task needs a title")
+        role = b.get("role")
+        if role is not None and role not in self.p.roles:
+            return self.ignore(e, f"unknown role {role!r}")
+        parent = b.get("parent")
+        if parent is not None and parent not in self.s.tasks:
+            return self.ignore(e, "no such parent task")
+        task = Task(e.id, e.actor, title, str(b.get("detail", "")),
+                    tuple(paths.norm(x) for x in _str_list(b.get("paths", []))), _str_list(b.get("topics", [])),
+                    role, parent, t)
+        self.s.tasks[e.id] = task
+        if parent:
+            self.s.tasks[parent].subtasks.append(e.id)
+
+    def on_done(self, e, t):
+        task = self.s.tasks.get(e.body["task"])
+        if task is None:
+            return self.ignore(e, "no such task")
+        outcome = e.body.get("outcome", "done")
+        if outcome not in OUTCOMES:
+            return self.ignore(e, f"outcome must be one of {', '.join(OUTCOMES)}")
+        lease = self.s.leases.get(task.lease) if task.lease else None
+        if not lease or not lease.active(t) or lease.actor != e.actor:
+            return self.ignore(e, "only the actor holding the task's lease reports it done")
+        task.outcome, task.summary = outcome, str(e.body.get("summary", ""))
+        evidence = e.body.get("evidence", {})
+        task.evidence = dict(evidence) if isinstance(evidence, dict) else {}
+        lease.released, lease.expiry = True, t
+
     # -- leases -------------------------------------------------------------------------------------------------
     def on_claim(self, e, t):
         b = e.body
-        scope = tuple(paths.norm(x) for x in _str_list(b.get("paths", [])))
-        topics = _str_list(b.get("topics", []))
+        task = None
+        if b.get("task_id") is not None:
+            task = self.s.tasks.get(b["task_id"])
+            if task is None:
+                return self.ignore(e, "no such task")
+            status = self.s.task_status(task, t)
+            if status != "open":
+                self.s.denied[e.id] = f"task is {status}"
+                return
+            role = self.s.actors[e.actor].role
+            if task.role and role not in (task.role, "human"):
+                self.s.denied[e.id] = f"task is for a {task.role}, not a {role}"
+                return
+        scope = tuple(paths.norm(x) for x in _str_list(b.get("paths", list(task.paths) if task else [])))
+        topics = _str_list(b.get("topics", list(task.topics) if task else []))
+        if task is not None:
+            topics = tuple(dict.fromkeys(topics + ("task:" + task.id,)))
         if not scope and not topics:
             return self.ignore(e, "a claim needs at least one path or topic")
         ttl = min(float(b.get("ttl", self.p.default_ttl)), self.p.max_ttl)
@@ -175,7 +266,10 @@ class _Folder:
             first = min(clash, key=lambda l: l.start)
             self.s.denied[e.id] = f"overlaps lease {first.id[:12]} held by {first.actor} ({first.task})"
             return
-        self.s.leases[e.id] = Lease(e.id, e.actor, str(b.get("task", "")), scope, topics, t, ttl, t + ttl)
+        self.s.leases[e.id] = Lease(e.id, e.actor, str(b.get("task", "") or (task.title if task else "")), scope,
+                                    topics, t, ttl, t + ttl)
+        if task is not None:
+            task.lease = e.id
 
     def _lease(self, e) -> Lease | None:
         lease = self.s.leases.get(e.body["lease"])
