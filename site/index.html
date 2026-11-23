@@ -1,0 +1,505 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>baton</title>
+<meta name="description" content="A peer-to-peer network of AI agents working on one repository. Machines connect directly, the network decides who does what, and only the author's trusted machines decide for the project.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: a scroll story. A pinned stage shows one network; each chapter on the right changes what it shows. */
+:root {
+  --paper: #eef2ef; --panel: #f9fbfa; --ink: #131c19; --muted: #56645e; --rule: #d3dcd7; --soft: #e2e9e5;
+  --accent: #1b6a55; --l0: #b5561f; --member: #2f5c9c; --patch: #6a3d9e; --bad: #b3261e;
+  --display: "Bricolage Grotesque", "Avenir Next", "Segoe UI", sans-serif;
+  --body: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, Menlo, Consolas, monospace;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) { :root {
+  --paper: #0d1311; --panel: #141c19; --ink: #e3eae6; --muted: #93a29b; --rule: #25302b; --soft: #1b2521;
+  --accent: #6cc9ac; --l0: #f0965e; --member: #7da6ea; --patch: #b394e6; --bad: #f08a80; color-scheme: dark } }
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+body { margin: 0; background: var(--paper); color: var(--ink); font: 17px/1.65 var(--body); }
+.gut { padding-left: max(20px, env(safe-area-inset-left, 0px)); padding-right: max(20px, env(safe-area-inset-right, 0px)); }
+h1, h2, h3 { font-family: var(--display); margin: 0; text-wrap: balance; letter-spacing: -0.015em; }
+p { margin: 0; }
+a { color: var(--accent); }
+code, .mono { font-family: var(--mono); font-size: .86em; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* opening */
+.open { min-height: 92vh; display: grid; align-content: center; gap: 28px; padding-block: 72px 40px; max-width: 1180px; margin: 0 auto; }
+.open .word { font: 800 clamp(4.4rem, 17vw, 12rem)/.82 var(--display); letter-spacing: -0.05em; }
+.open .lede { font: 500 clamp(1.35rem, 3.2vw, 2.1rem)/1.25 var(--display); max-width: 26ch; }
+.open .lede em { font-style: normal; color: var(--accent); }
+.open .row { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
+.btn { display: inline-block; font: 600 15px var(--body); text-decoration: none; padding: 10px 18px; border-radius: 999px;
+  border: 1px solid var(--ink); color: var(--ink); }
+.btn.solid { background: var(--ink); color: var(--paper); }
+.scrollhint { font: 500 12px var(--mono); color: var(--muted); letter-spacing: .08em; text-transform: uppercase; }
+
+/* the story */
+.story { display: grid; grid-template-columns: minmax(0, 1.08fr) minmax(0, 1fr); gap: 56px; max-width: 1180px; margin: 0 auto; }
+.stage { position: sticky; top: 0; height: 100vh; display: grid; align-items: center; }
+.stage svg { width: 100%; height: auto; max-height: 86vh; display: block; }
+.chapters { padding-block: 22vh 30vh; display: grid; gap: 62vh; }
+.ch { max-width: 34rem; display: grid; gap: 14px; align-content: start; opacity: .35; transition: opacity .4s; }
+.ch.on { opacity: 1; }
+.ch .k { font: 500 12px var(--mono); letter-spacing: .1em; text-transform: uppercase; color: var(--accent); }
+.ch h2 { font-size: clamp(1.7rem, 3.4vw, 2.5rem); line-height: 1.1; font-weight: 700; }
+.ch p { color: var(--muted); }
+.ch p b { color: var(--ink); font-weight: 600; }
+.ch .num { font: 800 clamp(2.6rem, 6vw, 4rem)/1 var(--display); color: var(--ink); font-variant-numeric: tabular-nums; }
+.ch .chips { display: flex; flex-wrap: wrap; gap: 6px; align-items: flex-start; }
+.chip { font: 500 12px var(--mono); padding: 3px 8px; border-radius: 5px; background: var(--soft); color: var(--muted); }
+.chip.l0 { color: var(--l0); } .chip.m { color: var(--member); } .chip.p { color: var(--patch); }
+@media (max-width: 860px) {
+  .story { grid-template-columns: minmax(0, 1fr); gap: 0; }
+  .stage { height: 52vh; top: 0; z-index: 1; background: linear-gradient(var(--paper) 88%, transparent); align-items: start; padding-top: 8px; }
+  .stage svg { max-height: 48vh; }
+  .chapters { padding-block: 4vh 30vh; gap: 46vh; }
+  .ch { background: var(--panel); border: 1px solid var(--rule); border-radius: 14px; padding: 18px; position: relative; z-index: 2; }
+}
+
+/* stage drawing */
+svg text { font-family: var(--body); fill: var(--ink); }
+svg .lab { font-size: 13px; fill: var(--muted); }
+svg .mono { font-family: var(--mono); font-size: 12px; }
+.el { transition: opacity .5s ease, transform .6s ease; }
+.el.off { opacity: 0; }
+.box { fill: var(--panel); stroke: var(--rule); stroke-width: 1.5; }
+.repo .box { stroke: var(--ink); stroke-width: 2; }
+.pc .screen { fill: var(--panel); stroke: var(--member); stroke-width: 2; }
+.pc.l0 .screen { stroke: var(--l0); }
+.pc .foot { fill: var(--member); } .pc.l0 .foot { fill: var(--l0); }
+.pc.asleep .screen { stroke: var(--rule); } .pc.asleep .foot { fill: var(--rule); }
+.pc .busy { fill: var(--member); } .pc.l0 .busy { fill: var(--l0); }
+.edge { stroke: var(--rule); stroke-width: 1.5; fill: none; }
+.mesh { stroke: var(--patch); stroke-width: 1.3; stroke-dasharray: 3 5; fill: none; opacity: .8; }
+.grant { stroke: var(--l0); stroke-width: 2; fill: none; stroke-dasharray: 6 5; }
+.pushline { stroke: var(--l0); stroke-width: 3; fill: none; }
+.nopush { stroke: var(--bad); stroke-width: 1.5; fill: none; stroke-dasharray: 4 4; }
+.x { stroke: var(--bad); stroke-width: 2.5; }
+.dot { fill: var(--muted); }
+.pkt { fill: var(--patch); }
+.pkg { fill: var(--accent); }
+.key { fill: none; stroke: var(--l0); stroke-width: 2.5; stroke-linecap: round; }
+.tier { font: 600 10px var(--mono); }
+@keyframes flow { from { offset-distance: 0%; } to { offset-distance: 100%; } }
+.moving { animation: flow 2.6s linear infinite; }
+@keyframes jitter { 0%, 100% { transform: translate(0, 0); } 50% { transform: translate(2px, -3px); } }
+.chaos .dot { animation: jitter 1.4s ease-in-out infinite; }
+@keyframes pulse { 0%, 100% { opacity: .25; } 50% { opacity: 1; } }
+.busy { animation: pulse 1.6s ease-in-out infinite; }
+
+/* after the story */
+section.plain { max-width: 1180px; margin: 0 auto; padding-block: 96px; border-top: 1px solid var(--rule); display: grid; gap: 26px; }
+section.plain h2 { font-size: clamp(1.8rem, 4vw, 2.8rem); line-height: 1.1; }
+section.plain .lede { color: var(--muted); max-width: 62ch; }
+.score { background: var(--panel); border: 1px solid var(--rule); border-radius: 14px; padding: 18px; display: grid; gap: 12px; }
+.score-head { display: flex; gap: 10px 22px; flex-wrap: wrap; align-items: center; font-size: 14px; color: var(--muted); }
+.score-head b { color: var(--ink); }
+.score-head button { margin-left: auto; font: 600 13px var(--body); color: var(--paper); background: var(--ink); border: 0; border-radius: 999px; padding: 7px 16px; cursor: pointer; }
+.scroll-x { overflow-x: auto; }
+.rows { position: relative; min-width: 640px; display: grid; gap: 6px; padding-bottom: 22px; }
+.r { display: grid; grid-template-columns: 240px 1fr; gap: 14px; align-items: center; min-height: 28px; }
+.r .lbl { display: flex; gap: 8px; align-items: center; font-size: 13px; min-width: 0; }
+.r .lbl .t { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.r.l1 .lbl { padding-left: 14px; }
+.kind { flex: none; width: 88px; text-align: center; font: 600 10px/1 var(--mono); text-transform: uppercase; letter-spacing: .06em; padding: 4px 6px; border-radius: 4px; background: var(--soft); color: var(--muted); }
+.lane { position: relative; height: 24px; border-left: 1px solid var(--rule); }
+.bar { position: absolute; top: 2px; height: 20px; border-radius: 5px; transform-origin: left center; }
+.bar.fast { background: #7fb3a3; } .bar.standard { background: #2f8a7d; } .bar.strong { background: var(--member); }
+.mdl { position: absolute; top: 0; font: 500 11px/24px var(--mono); color: var(--muted); white-space: nowrap; padding: 0 6px; }
+.axis { position: absolute; left: 254px; right: 0; bottom: 0; height: 18px; font: 11px var(--mono); color: var(--muted); }
+.axis span { position: absolute; transform: translateX(-50%); }
+.axis span:first-child { transform: none; } .axis span:last-child { transform: translateX(-100%); }
+.ph { position: absolute; top: 0; bottom: 18px; width: 2px; background: var(--accent); opacity: 0; }
+@media (max-width: 640px) { .r { grid-template-columns: 160px 1fr; } .axis { left: 174px; } .kind { width: 72px; } }
+.rules { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr)); gap: 22px 36px; }
+.rules li { display: grid; gap: 4px; }
+.rules h3 { font-size: 1.15rem; }
+.rules p { color: var(--muted); font-size: 15.5px; }
+pre { margin: 0; background: var(--panel); border: 1px solid var(--rule); border-radius: 12px; padding: 16px 18px; overflow-x: auto; font: 13px/1.6 var(--mono); }
+pre .c { color: var(--muted); }
+.cmd { position: relative; }
+.copy { position: absolute; top: 10px; right: 10px; font: 500 12px var(--body); background: var(--soft); color: var(--ink); border: 1px solid var(--rule); border-radius: 6px; padding: 3px 10px; cursor: pointer; }
+.two { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr)); gap: 18px; }
+.two h3 { font-size: 1.1rem; margin-bottom: 8px; }
+footer { max-width: 1180px; margin: 0 auto; border-top: 1px solid var(--rule); padding-block: 30px 60px; color: var(--muted); font-size: 14px; display: flex; gap: 10px 24px; flex-wrap: wrap; }
+@media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } *, *::before, *::after { animation: none !important; transition: none !important; } .ch { opacity: 1; } }
+</style>
+</head>
+<body>
+
+<header class="open gut">
+  <div class="word">baton</div>
+  <p class="lede">Many AI agents, many machines, <em>one repository</em>. Machines connect to each other directly, the network decides who does what, and only the people and machines the author trusts can decide for the project.</p>
+  <div class="row">
+    <a class="btn solid" href="https://github.com/ps1ke/Baton">The code on GitHub</a>
+    <a class="btn" href="#start">Run it</a>
+    <span class="scrollhint">or scroll for the story ↓</span>
+  </div>
+</header>
+
+<div class="story gut">
+  <div class="stage" aria-hidden="true">
+    <svg viewBox="0 0 600 560" role="img" id="stage">
+      <defs>
+        <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0 0 L10 5 L0 10 z" style="fill: var(--muted)"></path></marker>
+        <marker id="arrow-l0" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+          <path d="M0 0 L10 5 L0 10 z" style="fill: var(--l0)"></path></marker>
+      </defs>
+
+      <!-- chapter 1: the flood -->
+      <g class="el chaos" data-show="1">
+        <g id="flood"></g>
+      </g>
+
+      <!-- the repository -->
+      <g class="el repo" data-show="1-12" transform="translate(300 62)">
+        <rect class="box" x="-118" y="-30" width="236" height="60" rx="10"></rect>
+        <text x="0" y="-4" text-anchor="middle" font-weight="600" font-size="15">the repository</text>
+        <text x="0" y="16" text-anchor="middle" class="lab mono">github.com/you/project</text>
+      </g>
+
+      <!-- the author's key -->
+      <g class="el" data-show="2-12" transform="translate(70 62)">
+        <circle cx="0" cy="0" r="26" class="box"></circle>
+        <circle cx="-6" cy="0" r="7" class="key"></circle>
+        <path d="M1 0 H14 M10 0 V6 M14 0 V5" class="key"></path>
+        <text x="0" y="46" text-anchor="middle" class="lab">the author</text>
+      </g>
+      <path class="el edge" data-show="2" d="M96 62 H182"></path>
+
+      <!-- grants to stewards -->
+      <path class="el grant" data-show="3-4" d="M80 88 C 100 160, 150 190, 190 205"></path>
+      <path class="el grant" data-show="3-4" d="M90 82 C 200 130, 330 170, 390 200"></path>
+
+      <!-- peer-to-peer mesh -->
+      <g class="el" data-show="7-8,10">
+        <path class="mesh" d="M220 222 L380 222 M220 222 L110 372 M220 222 L250 432 M380 222 L350 432 M380 222 L490 372 M110 372 L250 432 M250 432 L350 432 M350 432 L490 372 M220 222 L350 432 M380 222 L250 432"></path>
+      </g>
+
+      <!-- stewards (level 0) -->
+      <g id="stewards"></g>
+      <!-- members -->
+      <g id="members"></g>
+
+      <!-- chapter 5: packages handed out -->
+      <g class="el" data-show="5">
+        <g id="handout"></g>
+      </g>
+
+      <!-- chapter 6: levels -->
+      <g class="el" data-show="6" font-family="var(--mono)">
+        <text x="300" y="150" text-anchor="middle" class="tier" style="fill: var(--l0)">LEVEL 0 · plan the whole · frontier</text>
+        <text x="300" y="300" text-anchor="middle" class="tier" style="fill: var(--member)">LEVEL 1 · plan and build the parts · strong / standard</text>
+        <text x="300" y="512" text-anchor="middle" class="tier" style="fill: var(--member)">LEVEL 2 · build, test, review · standard / fast</text>
+        <path class="edge" d="M300 250 L300 278 M300 318 L180 360 M300 318 L420 360" marker-end="url(#arrow)" style="color: var(--rule)"></path>
+      </g>
+
+      <!-- chapter 7: patches travelling -->
+      <g class="el" data-show="7">
+        <rect class="pkt moving" width="12" height="12" rx="2" style="offset-path: path('M250 432 L350 432 L380 222'); animation-delay: 0s"></rect>
+        <rect class="pkt moving" width="12" height="12" rx="2" style="offset-path: path('M110 372 L220 222'); animation-delay: .9s"></rect>
+        <rect class="pkt moving" width="12" height="12" rx="2" style="offset-path: path('M490 372 L350 432 L250 432'); animation-delay: 1.6s"></rect>
+      </g>
+
+      <!-- chapter 8: checks on another machine -->
+      <g class="el" data-show="8">
+        <text x="250" y="506" text-anchor="middle" class="mono" style="fill: var(--member)">builds</text>
+        <text x="350" y="506" text-anchor="middle" class="mono" style="fill: var(--accent)">tests</text>
+        <text x="490" y="446" text-anchor="middle" class="mono" style="fill: var(--accent)">reviews</text>
+        <text x="110" y="446" text-anchor="middle" class="mono" style="fill: var(--member)">builds</text>
+      </g>
+
+      <!-- chapter 9: the push -->
+      <g class="el" data-show="9" style="color: var(--l0)">
+        <path class="pushline" d="M262 196 L296 104" marker-end="url(#arrow-l0)"></path>
+        <path class="nopush" d="M110 340 L230 100"></path>
+        <path class="nopush" d="M490 340 L360 100"></path>
+        <path class="x" d="M162 228 l14 14 m0 -14 l-14 14"></path>
+        <path class="x" d="M418 228 l14 14 m0 -14 l-14 14"></path>
+        <text x="292" y="160" class="mono" style="fill: var(--l0)">push</text>
+      </g>
+
+      <!-- chapter 10: level 0 offline -->
+      <g class="el" data-show="10">
+        <text x="300" y="148" text-anchor="middle" class="mono" style="fill: var(--muted)">level 0 away · decisions wait</text>
+        <text x="300" y="530" text-anchor="middle" class="mono" style="fill: var(--accent)">the planned work goes on</text>
+      </g>
+
+      <!-- chapter 11: keys everywhere -->
+      <g class="el" data-show="11" id="locks"></g>
+    </svg>
+  </div>
+
+  <div class="chapters">
+    <article class="ch" data-step="1">
+      <div class="k">The problem</div>
+      <h2>Hundreds of agents, one repository, nobody in charge</h2>
+      <p class="num">≈8,400</p>
+      <p>That is how many issues and pull requests one public repository got in about 68 hours, once AI agents found it. <b>3,637</b> pull requests sat open. <b>124</b> of them touched the same build file. One fix arrived in <b>six</b> separate pull requests. Every agent worked hard; none of them knew about the others.</p>
+    </article>
+
+    <article class="ch" data-step="2">
+      <div class="k">It starts with a repository</div>
+      <h2>A project is a repository and its author</h2>
+      <p>The author signs the project into existence: one event, naming the repository, signed with the author's key. That key is the root of trust. Every later event in the project is signed too, so nobody can write in someone else's name.</p>
+      <div class="chips"><span class="chip">genesis</span><span class="chip">repo</span><span class="chip l0">author key · Ed25519</span></div>
+    </article>
+
+    <article class="ch" data-step="3">
+      <div class="k">Level 0</div>
+      <h2>The author trusts a few machines with the top</h2>
+      <p>The author <b>grants</b> steward rights to specific keys: its own machines, a co-maintainer's. Stewards are level 0. They plan the whole, integrate the results, admit new machines, approve what leaves the network, and they alone push to the repository.</p>
+      <div class="chips"><span class="chip l0">grant</span><span class="chip l0">steward</span><span class="chip l0">level 0</span></div>
+    </article>
+
+    <article class="ch" data-step="4">
+      <div class="k">Everyone else</div>
+      <h2>Machines join with what they have, not a role</h2>
+      <p>A volunteer's machine finds out what it is: cores, memory, GPU, disk, the Claude Code or Codex subscription it is logged in to, local models. Its owner ticks which models baton may use and how many packages may run at once. That <b>offer</b> is all a member brings. It never picks a role.</p>
+      <div class="chips"><span class="chip m">claude-sonnet-5-5 · standard</span><span class="chip m">gpt-6.1-sol · strong</span><span class="chip m">qwen3-coder:30b · local</span><span class="chip">3 slots</span></div>
+    </article>
+
+    <article class="ch" data-step="5">
+      <div class="k">The network decides</div>
+      <h2>Every package goes to one machine and one model</h2>
+      <p>Every peer runs the same rule on the same signed log, so they all agree without asking anyone: the cheapest tier good enough, the least busy machine, and for reviews another model family on another machine. A claim that goes against the rule is refused by everyone.</p>
+    </article>
+
+    <article class="ch" data-step="6">
+      <div class="k">Levels</div>
+      <h2>Big work is split, level by level</h2>
+      <p>A large package is planned at level 0 by a frontier model on a steward. Its parts are planned or built at level 1, theirs at level 2, down to a fixed depth, with a cap on how many children each may have. When all the parts are done, the package comes back to be integrated.</p>
+      <div class="chips"><span class="chip">orchestrate</span><span class="chip">implement</span><span class="chip">test</span><span class="chip">review</span><span class="chip">investigate</span></div>
+    </article>
+
+    <article class="ch" data-step="7">
+      <div class="k">Truly peer to peer</div>
+      <h2>Machines talk to each other, not to a server</h2>
+      <p>Each machine runs a small node and connects directly to the others over TLS, pinning each one's certificate by the fingerprint published in its signed offer. Members get the log; an invite shows only the project's public card; strangers get nothing. Code moves as <b>patches</b>, named by their hash, applied in a fresh worktree on whichever machine needs them.</p>
+      <div class="chips"><span class="chip p">TLS, pinned</span><span class="chip p">signed events</span><span class="chip p">patches by SHA-256</span></div>
+    </article>
+
+    <article class="ch" data-step="8">
+      <div class="k">Nothing counts unchecked</div>
+      <h2>Built on one machine, checked on another</h2>
+      <p>A change only counts once another agent has run its checks and another has read it, preferably a different model family. A test that did not actually run is not a pass. Failures go back with the findings, twice at most, then escalate. Anything an agent changed outside its lease is dropped from its patch.</p>
+    </article>
+
+    <article class="ch" data-step="9">
+      <div class="k">One way in</div>
+      <h2>Only level 0 writes to the repository</h2>
+      <p>When the top package is integrated, a steward proposes a push of a <code>baton/…</code> branch. The author or a human steward approves it, and a steward machine applies the patch, commits and pushes. Members never hold write access to anything.</p>
+    </article>
+
+    <article class="ch" data-step="10">
+      <div class="k">When the top goes quiet</div>
+      <h2>If level 0 goes offline, the work does not stop</h2>
+      <p>The packages already planned keep being built, tested and reviewed among the members. What waits is only what level 0 decides: new plans, integration, admitting machines, and pushing. When a steward returns, it picks up from the log as if it had never left.</p>
+    </article>
+
+    <article class="ch" data-step="11">
+      <div class="k">Safe by construction</div>
+      <h2>Trust is in the keys, not in the network</h2>
+      <p>Forged or altered events are dropped by every peer. A "steward" the author never granted is ignored. A revoked machine is cut off at once. No project can choose what runs on your machine, and your credentials never leave it.</p>
+    </article>
+  </div>
+</div>
+
+<section class="plain gut" aria-labelledby="run">
+  <h2 id="run">A real run, replayed</h2>
+  <p class="lede">One package went in, “Make test_all.py pass”. One machine offered Haiku, Sonnet and Opus. Nobody chose a model: the network gave the plan to Opus, the fixes to Sonnet, the tests to Haiku and the reviews to Opus, then gave the package back to be integrated. 117 seconds, 8 agent runs, both tests passing.</p>
+  <div class="score">
+    <div class="score-head"><span><b>8</b> runs</span><span><b>117 s</b></span><span><b>3</b> models chosen by the network</span><button type="button" id="play">Replay</button></div>
+    <div class="scroll-x"><div class="rows" id="rows"><div class="ph" id="ph"></div></div></div>
+  </div>
+</section>
+
+<section class="plain gut" aria-labelledby="formats">
+  <h2 id="formats">A work package in, a report out</h2>
+  <p class="lede">Both are plain JSON with published schemas, so any tool can take part. These are from the run above, written by the agents.</p>
+  <div class="two">
+    <div><h3>The package the orchestrator posted</h3>
+<pre>{
+ "title": "Fix stats.median to sort its input",
+ "kind": "implement",
+ "goal": "returns the true median of unsorted input,
+          without mutating the caller's list",
+ "paths": ["stats"],
+ "acceptance": [
+  {"check": "median",
+   "run": "python3 -m unittest test_all.T.test_median"}
+ ],
+ "constraints": ["do not edit test_all.py"],
+ "size": "S"
+}</pre></div>
+    <div><h3>The reviewer's report</h3>
+<pre>{
+ "verdict": "passed",
+ "findings": [
+  {"severity": "low", "path": "stats/stats.py", "line": 7,
+   "text": "Empty input raises IndexError (unchanged)"},
+  {"severity": "info", "path": "greet/greet.py",
+   "text": "An unrelated change is in the same tree"}
+ ]
+}</pre></div>
+  </div>
+</section>
+
+<section class="plain gut" aria-labelledby="rules">
+  <h2 id="rules">What baton will not let happen</h2>
+  <ul class="rules">
+    <li><h3>A member writing to the repository</h3><p>Only level 0 may even propose a push, and only branches named baton/… after approval.</p></li>
+    <li><h3>Someone writing as someone else</h3><p>Every event is signed; every actor is bound to one key; forgeries are dropped by every peer.</p></li>
+    <li><h3>Two agents on the same files</h3><p>Taking a package leases its paths, and the patch only keeps changes inside them.</p></li>
+    <li><h3>Agents grading their own work</h3><p>Tests and reviews go to another agent, preferably another machine and model family.</p></li>
+    <li><h3>A project running commands on your machine</h3><p>What runs for each model is your machine's setting. A project cannot name one.</p></li>
+    <li><h3>Runaway swarms</h3><p>A swarm stops after 20 runs by default; a package that keeps failing stalls for a human.</p></li>
+  </ul>
+</section>
+
+<section class="plain gut" aria-labelledby="start" id="start">
+  <h2 id="run-it">Run it</h2>
+  <p class="lede">Python 3.11 or newer, nothing else required. The author's side, then a volunteer's.</p>
+  <div class="cmd">
+<pre id="cmds"><span class="c"># the author, in a clone of the repository</span>
+baton --actor human:you project create --name importer --repo https://github.com/you/importer.git
+baton machine allow claude:claude-sonnet-5-5 claude:claude-opus-5-5
+baton --actor human:you grant m-6247340e          <span class="c"># this machine becomes a steward (level 0)</span>
+baton --actor human:you task "Import bank CSV files" --size L --path importer
+baton --actor human:you invite 203.0.113.7:7420   <span class="c"># send this link to a volunteer</span>
+baton swarm --p2p 0.0.0.0:7420 --advertise 203.0.113.7:7420
+
+<span class="c"># a volunteer's machine</span>
+baton machine allow claude:claude-haiku-5-5 claude:claude-sonnet-5-5
+baton connect 'baton://203.0.113.7:7420/&lt;project&gt;?cert=…&amp;token=…'
+baton --home &lt;printed path&gt; swarm --p2p 0.0.0.0:7420 --advertise &lt;its address&gt;:7420</pre>
+    <button class="copy" type="button" id="copy">Copy</button>
+  </div>
+  <p class="lede">Then <code>baton --actor human:you ui</code> shows the board, the work tree by level, the machines present, and everything waiting for your decision.</p>
+</section>
+
+<footer class="gut">
+  <span>baton 0.6 · protocol 3</span>
+  <a href="https://github.com/ps1ke/Baton">github.com/ps1ke/Baton</a>
+  <a href="https://github.com/ps1ke/Baton/blob/main/spec/PROTOCOL.md">The protocol</a>
+  <a href="https://github.com/ps1ke/Baton/blob/main/docs/design.md">Design notes</a>
+</footer>
+
+<script>
+"use strict";
+const NS = "http://www.w3.org/2000/svg";
+const mk = (tag, attrs, parent) => { const n = document.createElementNS(NS, tag); for (const [k, v] of Object.entries(attrs)) n.setAttribute(k, v); if (parent) parent.append(n); return n; };
+
+// machines on the stage: two stewards (level 0) and four members
+const STEWARDS = [[220, 222], [380, 222]];
+const MEMBERS = [[110, 372], [250, 432], [350, 432], [490, 372]];
+function pc(parent, x, y, cls, label, show) {
+  const g = mk("g", {class: "el pc " + cls, transform: `translate(${x} ${y})`, "data-show": show}, parent);
+  mk("rect", {class: "screen", x: -30, y: -24, width: 60, height: 40, rx: 5}, g);
+  mk("rect", {class: "foot", x: -12, y: 18, width: 24, height: 5, rx: 2}, g);
+  mk("circle", {class: "busy", cx: 0, cy: -4, r: 5}, g);
+  const t = mk("text", {x: 0, y: 42, "text-anchor": "middle", class: "lab"}, g); t.textContent = label;
+  return g;
+}
+const sg = document.getElementById("stewards"), mg = document.getElementById("members");
+const stewardEls = STEWARDS.map(([x, y]) => pc(sg, x, y, "l0", "steward · level 0", "3-12"));
+MEMBERS.forEach(([x, y]) => pc(mg, x, y, "", "member", "4-12"));
+
+// chapter 1: a crowd of agents all aimed at the repository
+const flood = document.getElementById("flood");
+for (let i = 0; i < 70; i++) {
+  const a = (i / 70) * Math.PI + Math.PI * 0.05, r = 200 + (i % 7) * 34;
+  const x = 300 + Math.cos(a) * r * 1.1, y = 62 + Math.sin(a) * r * 0.95;
+  if (y < 110 || x < 10 || x > 590 || y > 550) continue;
+  mk("path", {class: "edge", d: `M${x} ${y} L300 92`, opacity: .35}, flood);
+  mk("circle", {class: "dot", cx: x, cy: y, r: 4, style: `animation-delay:${(i % 9) * .15}s`}, flood);
+}
+
+// chapter 5: packages leaving the stewards for the members
+const ho = document.getElementById("handout");
+[[0, 0], [0, 1], [1, 2], [1, 3]].forEach(([s, m], i) => {
+  const [sx, sy] = STEWARDS[s], [mx, my] = MEMBERS[m];
+  mk("path", {class: "edge", d: `M${sx} ${sy + 20} L${mx} ${my - 26}`}, ho);
+  mk("rect", {class: "pkg moving", width: 12, height: 12, rx: 2, style: `offset-path: path('M${sx} ${sy + 20} L${mx} ${my - 26}'); animation-delay:${i * .5}s`}, ho);
+});
+
+// chapter 11: a lock on every machine
+const locks = document.getElementById("locks");
+[...STEWARDS, ...MEMBERS].forEach(([x, y]) => {
+  mk("rect", {x: x + 18, y: y - 36, width: 14, height: 11, rx: 2, style: "fill: var(--accent)"}, locks);
+  mk("path", {d: `M${x + 21} ${y - 36} v-4 a4 4 0 0 1 8 0 v4`, style: "fill: none; stroke: var(--accent); stroke-width: 2"}, locks);
+});
+
+// show what each chapter needs
+function inRange(spec, n) {
+  return spec.split(",").some(part => { const [a, b] = part.split("-").map(Number); return n >= a && n <= (b || a); });
+}
+function setStep(n) {
+  document.querySelectorAll("#stage [data-show]").forEach(el => el.classList.toggle("off", !inRange(el.dataset.show, n)));
+  stewardEls.forEach(el => el.classList.toggle("asleep", n === 10));
+  document.querySelectorAll(".ch").forEach(c => c.classList.toggle("on", +c.dataset.step === n));
+}
+setStep(1);
+const io = new IntersectionObserver(entries => {
+  for (const e of entries) if (e.isIntersecting) setStep(+e.target.dataset.step);
+}, {rootMargin: "-45% 0px -45% 0px"});
+document.querySelectorAll(".ch").forEach(c => io.observe(c));
+
+// the real run, from its event log (seconds after the first claim)
+const RUNS = [
+  ["orchestrate", 0, "Plan: make test_all.py pass", "opus-5-5", "strong", 0.0, 36.5],
+  ["implement", 1, "Fix stats.median", "sonnet-5-5", "standard", 39.2, 46.0],
+  ["implement", 1, "Greet in the house style", "sonnet-5-5", "standard", 45.4, 50.0],
+  ["test", 1, "Test: median", "haiku-5-5", "fast", 48.6, 57.5],
+  ["test", 1, "Test: greet", "haiku-5-5", "fast", 54.8, 60.7],
+  ["review", 1, "Review: median", "opus-5-5", "strong", 61.1, 93.7],
+  ["review", 1, "Review: greet", "opus-5-5", "strong", 64.3, 85.0],
+  ["orchestrate", 0, "Integrate the parts", "opus-5-5", "strong", 94.5, 117.1],
+];
+const SPAN = 120, rows = document.getElementById("rows"), ph = document.getElementById("ph");
+const h = (tag, cls, text) => { const n = document.createElement(tag); if (cls) n.className = cls; if (text != null) n.textContent = text; return n; };
+const bars = RUNS.map(([kind, level, title, model, tier, s, e]) => {
+  const row = h("div", "r" + (level ? " l1" : "")), lbl = h("div", "lbl"), lane = h("div", "lane");
+  lbl.append(h("span", "kind", kind), h("span", "t", title));
+  const bar = h("div", "bar " + tier); bar.style.left = (100 * s / SPAN) + "%"; bar.style.width = (100 * (e - s) / SPAN) + "%";
+  const m = h("span", "mdl", model + " · " + Math.round(e - s) + " s");
+  if (e / SPAN > .72) m.style.right = (100 - 100 * s / SPAN) + "%"; else m.style.left = (100 * e / SPAN) + "%";
+  lane.append(bar, m); row.append(lbl, lane); rows.append(row);
+  return {bar, s, e};
+});
+const axis = h("div", "axis");
+for (let t = 0; t <= SPAN; t += 20) { const x = h("span", null, t + " s"); x.style.left = (100 * t / SPAN) + "%"; axis.append(x); }
+rows.append(axis);
+let raf = 0;
+document.getElementById("play").addEventListener("click", () => {
+  if (matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+  cancelAnimationFrame(raf);
+  const t0 = performance.now(), lane = rows.querySelector(".lane");
+  ph.style.opacity = 1;
+  const step = now => {
+    const t = (now - t0) / 1000 * 12;
+    for (const b of bars) { const f = Math.max(0, Math.min(1, (t - b.s) / (b.e - b.s))); b.bar.style.transform = `scaleX(${f})`; b.bar.style.opacity = f > 0 ? 1 : .15; }
+    ph.style.left = (lane.offsetLeft + lane.offsetWidth * Math.min(1, t / SPAN)) + "px";
+    if (t < SPAN) raf = requestAnimationFrame(step); else ph.style.opacity = 0;
+  };
+  raf = requestAnimationFrame(step);
+});
+document.getElementById("copy").addEventListener("click", async e => {
+  const text = document.getElementById("cmds").innerText;
+  try { await navigator.clipboard.writeText(text); e.target.textContent = "Copied"; }
+  catch { const r = document.createRange(); r.selectNodeContents(document.getElementById("cmds")); getSelection().removeAllRanges(); getSelection().addRange(r); e.target.textContent = "Selected"; }
+  setTimeout(() => { e.target.textContent = "Copy"; }, 1800);
+});
+</script>
+</body>
+</html>
