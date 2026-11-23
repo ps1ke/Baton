@@ -1,0 +1,20 @@
+{
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "$id": "https://baton.invalid/schemas/1/event.schema.json",
+ "title": "baton event (protocol 1)",
+ "description": "One event. `id` is the SHA-256 of the canonical JSON of the other six fields (spec section 3); a schema cannot check that, a reader must.",
+ "type": "object",
+ "required": ["kind", "actor", "lamport", "ts", "parents", "body", "id"],
+ "additionalProperties": false,
+ "properties": {
+  "kind": {"enum": ["project", "join", "apply", "admit", "decline", "task", "claim", "renew", "release", "done",
+                    "propose", "approve", "reject", "executed"]},
+  "actor": {"type": "string", "minLength": 1, "maxLength": 120},
+  "lamport": {"type": "integer", "minimum": 1},
+  "ts": {"type": "number"},
+  "parents": {"type": "array", "items": {"$ref": "#/$defs/id"}, "uniqueItems": true},
+  "body": {"type": "object"},
+  "id": {"$ref": "#/$defs/id"}
+ },
+ "$defs": {"id": {"type": "string", "pattern": "^[0-9a-f]{64}$"}}
+}

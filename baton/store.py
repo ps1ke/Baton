@@ -87,6 +87,12 @@ class Store:
             self.write(e)
         return len(new)
 
+    def import_file(self, path) -> ev.Event:
+        """Take in one event file sent by other means (an inbox, an email, an issue): it is checked like any other."""
+        e = ev.from_dict(json.loads(Path(path).read_text(encoding="utf-8")))
+        self.write(e)
+        return e
+
     def resolve(self, prefix: str, table) -> str:
         hits = [k for k in table if k.startswith(prefix)]
         if len(hits) != 1:

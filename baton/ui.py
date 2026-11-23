@@ -1,23 +1,32 @@
-"""`baton ui`: a local dashboard over the log. It reads the same events the CLI does and writes only what a human may
-write (approve, reject, execute), as that human.
+"""`baton ui`: a local dashboard over every project this machine knows.
+
+The home page is the directory: the projects in your workspace and in the catalogs you follow, with what they need
+and how they link to each other, and a Help button that applies to a project as one of your agents. A project page
+shows its board, leases, agents, applications, proposals and activity, and lets a human of that project admit,
+decline, approve, reject, execute and add links.
 
 It listens on 127.0.0.1 only. Every write needs the session token printed with the URL (so another web page open in
-the same browser cannot post to it), and every request must name this host, which stops DNS-rebinding pages.
+the same browser cannot post to it), and every request must name this host, which stops DNS-rebinding pages. All
+text from logs and catalogs is untrusted and the page only ever inserts it as text.
 """
 
 from __future__ import annotations
 
+import hashlib
 import http.server
 import json
+import re
 import secrets
 import threading
 import time
 import webbrowser
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import urlparse
 
 from . import forge
+from . import manifest as mf
 from .store import Store
+from .workspace import Workspace, manifest_of, volunteer
 
 PAGE = Path(__file__).with_name("ui.html")
 FEED = 80
@@ -37,11 +46,19 @@ def describe(e, s) -> tuple[str, str]:
         result = "denied"
     elif e.id in s.proposals:
         result = s.proposals[e.id].status
+    elif e.id in s.applications:
+        result = s.applications[e.id].status
     else:
         result = "ok"
     k = e.kind
-    if k == "join":
+    if k == "project":
+        text = "created the project" if e.id == s.project_id else "changed " + ", ".join(sorted(b))
+    elif k == "join":
         text = f"joined as {b.get('role')} under {b.get('parent')}"
+    elif k == "apply":
+        text = f"applied as {b.get('role')}" + (f" under {b['parent']}" if b.get("parent") else "")
+    elif k in ("admit", "decline"):
+        text = ("admitted " if k == "admit" else "declined ") + str(b.get("applicant"))
     elif k == "task":
         text = f"posted “{b.get('title', '')}”" + (" (subtask)" if b.get("parent") else "")
     elif k == "claim":
@@ -51,14 +68,14 @@ def describe(e, s) -> tuple[str, str]:
             text = f"claimed {', '.join(b.get('paths', []) + b.get('topics', [])) or '?'} for {b.get('task', '')}"
     elif k == "release":
         lease = s.leases.get(b.get("lease", ""))
-        text = f"released {lease.task if lease else b.get('lease', '')[:12]}"
+        text = f"released {lease.task if lease else str(b.get('lease', ''))[:12]}"
     elif k == "done":
         text = f"{b.get('outcome', 'done')} “{_title(s, b.get('task', ''))}”" + (f": {b['summary']}" if b.get("summary") else "")
     elif k == "propose":
         text = f"proposed {b.get('action')} on {b.get('target') or '-'}"
     elif k in ("approve", "reject", "executed"):
         p = s.proposals.get(b.get("proposal", ""))
-        what = f"{p.action} on {p.target or '-'} by {p.actor}" if p else b.get("proposal", "")[:12]
+        what = f"{p.action} on {p.target or '-'} by {p.actor}" if p else str(b.get("proposal", ""))[:12]
         text = {"approve": "approved", "reject": "rejected", "executed": "executed"}[k] + " " + what
     else:
         text = k
@@ -90,6 +107,9 @@ def snapshot(store: Store, now: float | None = None) -> dict:
     proposals = [{"id": p.id, "actor": p.actor, "action": p.action, "target": p.target, "payload": p.payload,
                   "status": p.status, "reason": p.reason, "decided_by": p.decided_by, "result": p.result, "ts": p.ts}
                  for p in sorted(s.proposals.values(), key=lambda p: p.ts, reverse=True)]
+    applications = [{"id": a.id, "actor": a.actor, "role": a.role, "parent": a.parent, "offer": a.offer,
+                     "note": a.note, "ts": a.ts, "status": a.status, "decided_by": a.decided_by, "reason": a.reason}
+                    for a in sorted(s.applications.values(), key=lambda a: a.ts, reverse=True)]
     feed = []
     for e in reversed(ordered):
         if e.kind == "renew":
@@ -102,19 +122,32 @@ def snapshot(store: Store, now: float | None = None) -> dict:
     return {
         "now": now, "home": str(store.home.resolve()), "events": len(ordered), "held": len(held), "bad": len(bad),
         "humans": sorted(pol.humans), "actors": [actor(a) for a in s.actors.values()], "tasks": tasks,
-        "leases": leases, "proposals": proposals, "feed": feed,
+        "leases": leases, "proposals": proposals, "applications": applications, "feed": feed,
+        "manifest": manifest_of(store, now), "join": s.join_mode,
+        "roles": [{"name": r.name, "under": r.under, "model": r.model, "effort": r.effort} for r in pol.roles.values()],
         "counts": {"refused": refused, "denied": len(s.denied), "ignored": len(s.ignored)},
         "executors": sorted(forge.ACTIONS),
     }
 
 
-def decide(store: Store, actor: str, proposal: str, decision: str, reason: str = "") -> dict:
+def decide(store: Store, actor: str, req: dict) -> dict:
+    """approve / reject / execute a proposal, or admit / decline an application, as `actor`."""
+    decision = str(req.get("decision", ""))
+    if decision in ("admit", "decline"):
+        body = {"applicant": str(req["applicant"])}
+        if decision == "decline" and req.get("reason"):
+            body["reason"] = str(req["reason"])
+        e = store.append(decision, actor, body)
+        after = store.state()
+        if e.id in after.ignored:
+            raise ValueError(after.ignored[e.id])
+        return {"ok": True}
     s = store.state()
-    pid = store.resolve(proposal, s.proposals)
+    pid = store.resolve(str(req["proposal"]), s.proposals)
     if decision in ("approve", "reject"):
         body = {"proposal": pid}
-        if decision == "reject" and reason:
-            body["reason"] = reason
+        if decision == "reject" and req.get("reason"):
+            body["reason"] = str(req["reason"])
         e = store.append(decision, actor, body)
     elif decision == "execute":
         p = s.proposals[pid]
@@ -129,11 +162,73 @@ def decide(store: Store, actor: str, proposal: str, decision: str, reason: str =
     return {"ok": True, "status": after.proposals[pid].status}
 
 
-def make_server(store: Store, actor: str | None, host: str = "127.0.0.1", port: int = 8765):
+def add_link(store: Store, actor: str, req: dict) -> dict:
+    link = {"rel": str(req.get("rel", "related"))}
+    for k in ("project", "manifest", "name"):
+        v = str(req.get(k) or "").strip()
+        if v:
+            link[k] = v
+    s = store.state()
+    links = [l for l in s.project.get("links", []) if l != link] + [link]
+    e = store.append("project", actor, {"links": links})
+    after = store.state()
+    if e.id in after.ignored:
+        raise ValueError(after.ignored[e.id])
+    return {"ok": True}
+
+
+def key_for(home: str, project_id: str | None) -> str:
+    return project_id or "log-" + hashlib.sha256(str(Path(home).resolve()).encode()).hexdigest()[:16]
+
+
+class Directory:
+    """What the page can see: the workspace's projects and catalogs, plus the log `baton ui` was started in."""
+
+    def __init__(self, ws: Workspace, extra_home: Path | None = None):
+        self.ws, self.extra = ws, extra_home
+        self._cache: tuple[float, list, list] | None = None
+
+    def entries(self, fresh: bool = False) -> tuple[list[dict], list[str]]:
+        if not fresh and self._cache and time.time() - self._cache[0] < 30:
+            return self._cache[1], self._cache[2]
+        entries, problems = self.ws.discover()
+        if self.extra and (self.extra / "events").is_dir():
+            home = str(self.extra.resolve())
+            if not any(e.get("home") == home for e in entries):
+                store = Store(self.extra)
+                m = manifest_of(store)
+                hit = next((e for e in entries if m and e["manifest"]["id"] == m["id"]), None)
+                if hit:
+                    hit.update(local=True, home=home)
+                else:
+                    entries.insert(0, {"manifest": m, "local": True, "trusted": True, "home": home,
+                                       "sources": ["this folder"]})
+        for e in entries:
+            e["key"] = key_for(e.get("home", ""), e["manifest"]["id"] if e.get("manifest") else None)
+        self._cache = (time.time(), entries, problems)
+        return entries, problems
+
+    def store(self, key: str) -> Store:
+        for e in self.entries()[0]:
+            if e["key"] == key and e.get("home"):
+                return Store(e["home"])
+        for e in self.entries(fresh=True)[0]:
+            if e["key"] == key and e.get("home"):
+                return Store(e["home"])
+        raise KeyError("no local log for this project")
+
+    def entry(self, project_id: str) -> dict:
+        for e in self.entries(fresh=True)[0]:
+            if e.get("manifest") and e["manifest"]["id"] == project_id:
+                return e
+        raise KeyError("unknown project")
+
+
+def make_server(ws: Workspace, actor: str | None, host: str = "127.0.0.1", port: int = 8765,
+                extra_home: Path | None = None):
     token = secrets.token_urlsafe(24)
-    humans = store.policy().humans
-    if actor and actor not in humans:
-        raise ValueError(f"{actor} is not in [gate] humans {sorted(humans)}; the dashboard writes as a human")
+    directory = Directory(ws, extra_home)
+    route = re.compile(r"^/api/p/([\w-]{1,80})/(state|decide|link)$")
 
     class Handler(http.server.BaseHTTPRequestHandler):
         server_version = "baton"
@@ -154,22 +249,42 @@ def make_server(store: Store, actor: str | None, host: str = "127.0.0.1", port: 
             self.send_header("Referrer-Policy", "no-referrer")
             self.send_header("Content-Security-Policy",
                              "default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'unsafe-inline'; "
-                             "connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'")
+                             "connect-src 'self'; img-src 'none'; frame-ancestors 'none'; base-uri 'none'; "
+                             "form-action 'none'")
             self.end_headers()
             self.wfile.write(body)
 
         def _json(self, code: int, obj):
             self._send(code, json.dumps(obj).encode("utf-8"))
 
+        def _body(self) -> dict:
+            n = int(self.headers.get("Content-Length", "0"))
+            if n > 65536:
+                raise ValueError("request too large")
+            d = json.loads(self.rfile.read(n) or b"{}")
+            if not isinstance(d, dict):
+                raise ValueError("expected a JSON object")
+            return d
+
         def do_GET(self):
             if not self._host_ok():
                 return self._json(403, {"error": "wrong host"})
-            url = urlparse(self.path)
-            if url.path == "/":
+            path = urlparse(self.path).path
+            if path == "/":
                 return self._send(200, PAGE.read_bytes(), "text/html; charset=utf-8")
-            if url.path == "/api/state":
+            if path == "/api/projects":
+                entries, problems = directory.entries(fresh="fresh" in (urlparse(self.path).query or ""))
+                return self._json(200, {"me": actor, "projects": entries, "problems": problems,
+                                        "catalogs": ws.load()["catalogs"], "now": time.time()})
+            m = route.match(path)
+            if m and m.group(2) == "state":
+                try:
+                    store = directory.store(m.group(1))
+                except KeyError as err:
+                    return self._json(404, {"error": str(err)})
                 snap = snapshot(store)
                 snap["me"] = actor
+                snap["me_here"] = bool(actor) and actor in snap["humans"]
                 return self._json(200, snap)
             self._json(404, {"error": "not found"})
 
@@ -178,27 +293,48 @@ def make_server(store: Store, actor: str | None, host: str = "127.0.0.1", port: 
                 return self._json(403, {"error": "wrong host"})
             if not secrets.compare_digest(self.headers.get("X-Baton-Token", ""), token):
                 return self._json(403, {"error": "missing or wrong session token: open the URL baton printed"})
-            if urlparse(self.path).path != "/api/decide":
-                return self._json(404, {"error": "not found"})
             if not actor:
-                return self._json(403, {"error": "read-only: start `baton ui` with --actor <a human from the policy>"})
+                return self._json(403, {"error": "read-only: start `baton ui --actor human:<you>` to act"})
+            path = urlparse(self.path).path
             try:
-                n = int(self.headers.get("Content-Length", "0"))
-                if n > 65536:
-                    raise ValueError("request too large")
-                req = json.loads(self.rfile.read(n) or b"{}")
-                out = decide(store, actor, str(req["proposal"]), str(req["decision"]), str(req.get("reason", "")))
-            except (KeyError, ValueError, TypeError, RuntimeError, NotImplementedError) as err:
+                req = self._body()
+                if path == "/api/catalogs":
+                    source = str(req.get("source", "")).strip()
+                    if not source:
+                        raise ValueError("give a catalog path or URL")
+                    (ws.remove_catalog if req.get("action") == "remove" else ws.add_catalog)(source)
+                    directory.entries(fresh=True)
+                    return self._json(200, {"ok": True})
+                if path == "/api/volunteer":
+                    agent = str(req.get("actor", "")).strip()
+                    if not re.fullmatch(r"[\w.:@-]{1,80}", agent) or agent.startswith("human:"):
+                        raise ValueError("name your agent with letters, digits and . : @ - _ (not human:...)")
+                    offer = {k: [x.strip() for x in str(req.get(k, "")).split(",") if x.strip()][:20]
+                             for k in ("skills", "models", "hardware")}
+                    offer = {k: v for k, v in offer.items() if v}
+                    out = volunteer(ws, directory.entry(str(req["project"])), agent, str(req.get("role") or "worker"),
+                                    str(req.get("parent") or "") or None, offer, str(req.get("note", ""))[:2000])
+                    directory.entries(fresh=True)
+                    return self._json(200, out)
+                m = route.match(path)
+                if not m or m.group(2) == "state":
+                    return self._json(404, {"error": "not found"})
+                store = directory.store(m.group(1))
+                if actor not in store.policy().humans:
+                    return self._json(403, {"error": f"{actor} is not a human of this project, so it cannot decide here"})
+                out = decide(store, actor, req) if m.group(2) == "decide" else add_link(store, actor, req)
+                directory.entries(fresh=True)
+                return self._json(200, out)
+            except (KeyError, ValueError, TypeError, RuntimeError, NotImplementedError, OSError) as err:
                 return self._json(400, {"error": str(err)})
-            self._json(200, out)
 
     srv = http.server.ThreadingHTTPServer((host, port), Handler)
     srv.daemon_threads = True
     return srv, token
 
 
-def serve(store: Store, actor: str | None, port: int = 8765, open_browser: bool = True):
-    srv, token = make_server(store, actor, port=port)
+def serve(ws: Workspace, actor: str | None, port: int = 8765, open_browser: bool = True, extra_home: Path | None = None):
+    srv, token = make_server(ws, actor, port=port, extra_home=extra_home)
     url = f"http://127.0.0.1:{srv.server_address[1]}/#token={token}"
     print(f"baton ui on {url}" + ("" if actor else "  (read-only: no --actor)"), flush=True)
     if open_browser:

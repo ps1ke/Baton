@@ -21,23 +21,43 @@
 }
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.45 var(--sans); }
-header { position: sticky; top: 0; z-index: 2; display: flex; gap: 16px; align-items: center; flex-wrap: wrap;
+a { color: var(--accent); }
+header { position: sticky; top: 0; z-index: 3; display: flex; gap: 14px; align-items: center; flex-wrap: wrap;
   padding: 12px 20px; background: var(--panel); border-bottom: 1px solid var(--line); }
 header h1 { font-size: 16px; margin: 0; letter-spacing: .02em; }
-header .home { font: 12px var(--mono); color: var(--muted); overflow-wrap: anywhere; }
-.stats { display: flex; gap: 14px; margin-left: auto; flex-wrap: wrap; font-size: 12px; color: var(--muted); }
+header h1 a { color: var(--ink); text-decoration: none; }
+.crumb { color: var(--muted); overflow-wrap: anywhere; }
+.crumb b { color: var(--ink); }
+.stats { display: flex; gap: 14px; margin-left: auto; flex-wrap: wrap; font-size: 12px; color: var(--muted); align-items: center; }
 .stats b { color: var(--ink); font-variant-numeric: tabular-nums; }
 .live { display: inline-flex; align-items: center; gap: 6px; }
 .live i { width: 8px; height: 8px; border-radius: 50%; background: var(--ok); }
 .live.stale i { background: var(--bad); }
-main { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr); gap: 16px; padding: 16px 20px 40px; }
-@media (max-width: 960px) { main { grid-template-columns: minmax(0, 1fr); padding: 12px 16px 32px; } }
+.wrap { padding: 16px 20px 40px; }
+@media (max-width: 640px) { .wrap { padding: 12px 16px 32px; } header { padding: 10px 16px; } }
+main { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr); gap: 16px; }
+@media (max-width: 960px) { main { grid-template-columns: minmax(0, 1fr); } }
 section { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; min-width: 0; }
-section + section { margin-top: 16px; }
+.stack > * + * { margin-top: 16px; }
 h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 0 0 10px;
   display: flex; align-items: center; gap: 8px; }
 h2 .n { background: var(--soft); color: var(--ink); border-radius: 999px; padding: 0 8px; font-size: 12px; }
 .empty { color: var(--muted); font-size: 13px; padding: 6px 0; }
+.toolbar { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-bottom: 14px; }
+input, select, textarea { font: inherit; font-size: 13px; color: var(--ink); background: var(--panel); border: 1px solid var(--line);
+  border-radius: 6px; padding: 6px 9px; min-width: 0; }
+input:focus, select:focus, textarea:focus, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.toolbar input[type=search] { flex: 1 1 260px; }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 320px), 1fr)); gap: 14px; }
+.proj { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; display: flex;
+  flex-direction: column; gap: 8px; min-width: 0; }
+.proj h3 { margin: 0; font-size: 16px; overflow-wrap: anywhere; }
+.proj .sum { color: var(--muted); overflow-wrap: anywhere; }
+.row { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.proj .act { display: flex; gap: 14px; font-size: 12px; color: var(--muted); flex-wrap: wrap; }
+.proj .act b { color: var(--ink); }
+.proj .btns { margin-top: auto; }
+.label { font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); margin-right: 2px; }
 .board { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
 @media (max-width: 640px) { .board { grid-template-columns: minmax(0, 1fr); } }
 .col { background: var(--soft); border-radius: 8px; padding: 8px; min-height: 60px; }
@@ -48,15 +68,18 @@ h2 .n { background: var(--soft); color: var(--ink); border-radius: 999px; paddin
 .card.sub { margin-left: 12px; border-left: 3px solid var(--line); }
 .chip { display: inline-block; font: 11px var(--mono); padding: 1px 6px; border-radius: 4px; background: var(--soft);
   color: var(--muted); margin: 2px 4px 0 0; overflow-wrap: anywhere; }
+.chip.need { background: var(--info-bg); color: var(--info); }
+button.chip { cursor: pointer; border: 1px solid transparent; }
+button.chip.on { border-color: var(--accent); color: var(--accent); }
 .pill { display: inline-block; font-size: 11px; font-weight: 600; padding: 1px 8px; border-radius: 999px; white-space: nowrap; }
 .clamp { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
-.ok, .done, .approved, .executed { color: var(--ok); background: var(--ok-bg); }
-.pending, .taken, .escalated { color: var(--warn); background: var(--warn-bg); }
-.failed, .denied, .ignored, .rejected, .duplicate, .over_budget, .unleased, .unknown_action { color: var(--bad); background: var(--bad-bg); }
+.ok, .done, .approved, .executed, .admitted, .local { color: var(--ok); background: var(--ok-bg); }
+.pending, .taken, .escalated, .apply { color: var(--warn); background: var(--warn-bg); }
+.failed, .denied, .ignored, .rejected, .duplicate, .over_budget, .unleased, .unknown_action, .declined, .closed { color: var(--bad); background: var(--bad-bg); }
 .open { color: var(--accent); background: var(--accent-bg); }
 .proposal { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; margin-bottom: 10px; }
 .proposal .head { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
-.proposal .head .what { font-weight: 600; }
+.proposal .head .what { font-weight: 600; overflow-wrap: anywhere; }
 .proposal pre { white-space: pre-wrap; overflow-wrap: anywhere; background: var(--soft); border-radius: 6px; padding: 8px 10px;
   font: 12px/1.5 var(--mono); max-height: 220px; overflow: auto; margin: 8px 0; }
 .btns { display: flex; gap: 8px; flex-wrap: wrap; }
@@ -66,8 +89,10 @@ button:hover:not(:disabled) { border-color: var(--muted); }
 button:disabled { opacity: .45; cursor: not-allowed; }
 button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
 button.danger { color: var(--bad); }
-.note { font-size: 12px; color: var(--muted); }
-.err { color: var(--bad); font-size: 12px; margin-top: 6px; }
+button.link { border: 0; background: none; padding: 0; color: var(--accent); text-decoration: underline; font-size: inherit; }
+.note { font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
+.err { color: var(--bad); font-size: 12px; margin-top: 6px; overflow-wrap: anywhere; }
+.okmsg { color: var(--ok); font-size: 13px; margin-top: 6px; overflow-wrap: anywhere; }
 table { width: 100%; border-collapse: collapse; font-size: 13px; }
 td, th { text-align: left; padding: 6px 4px; border-bottom: 1px solid var(--line); vertical-align: top; overflow-wrap: anywhere; }
 th { color: var(--muted); font-weight: 600; font-size: 12px; }
@@ -84,63 +109,106 @@ td.num { font-variant-numeric: tabular-nums; white-space: nowrap; }
 .feed .when { color: var(--muted); font: 12px var(--mono); }
 .feed div > .pill { align-self: start; }
 .feed .who { font-weight: 600; margin-right: 4px; }
-.banner { margin: 0 20px; padding: 8px 12px; border-radius: 8px; font-size: 13px; }
-.banner.ro { background: var(--warn-bg); color: var(--warn); margin-top: 12px; }
+.banner { padding: 8px 12px; border-radius: 8px; font-size: 13px; background: var(--warn-bg); color: var(--warn); margin-bottom: 14px; }
+.phead { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px; margin-bottom: 16px; }
+@media (max-width: 640px) { .phead { grid-template-columns: minmax(0, 1fr); } }
+.phead h2.big { font-size: 22px; text-transform: none; letter-spacing: 0; color: var(--ink); margin: 0 0 4px; }
+.phead .desc { white-space: pre-wrap; margin-top: 8px; overflow-wrap: anywhere; }
+.links ul { padding-left: 18px; margin: 6px 0; }
+.links li { margin: 4px 0; overflow-wrap: anywhere; }
+.form { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 150px), 1fr)); gap: 8px; align-items: end; margin-top: 10px; }
+.form label { display: grid; gap: 3px; font-size: 12px; color: var(--muted); }
+details summary { cursor: pointer; color: var(--muted); font-size: 13px; }
+dialog { border: 1px solid var(--line); border-radius: 12px; background: var(--panel); color: var(--ink); padding: 18px 20px;
+  width: min(520px, calc(100vw - 32px)); }
+dialog::backdrop { background: rgb(0 0 0 / .4); }
+dialog h3 { margin: 0 0 4px; }
+dialog .fields { display: grid; gap: 10px; margin: 14px 0; }
+dialog label { display: grid; gap: 4px; font-size: 12px; color: var(--muted); }
+.mono { font-family: var(--mono); font-size: 12px; }
 </style>
 </head>
 <body>
 <header>
-  <h1>baton</h1>
-  <span class="home" id="home"></span>
-  <div class="stats">
-    <span><b id="s-events">0</b> events</span>
-    <span><b id="s-open">0</b> open</span>
-    <span><b id="s-taken">0</b> running</span>
-    <span><b id="s-leases">0</b> leases</span>
-    <span><b id="s-refused">0</b> refused at the gate</span>
-    <span id="me"></span>
-    <span class="live" id="live"><i></i><span>live</span></span>
-  </div>
+  <h1><a href="/" id="home-link">baton</a></h1>
+  <span class="crumb" id="crumb"></span>
+  <div class="stats" id="stats"></div>
 </header>
-<div id="banner"></div>
-<main>
-  <div>
-    <section>
-      <h2>Waiting for approval <span class="n" id="n-pending">0</span></h2>
-      <div id="pending"></div>
-    </section>
-    <section>
-      <h2>Task board <span class="n" id="n-tasks">0</span></h2>
-      <div class="board">
-        <div class="col"><h3>Open</h3><div id="c-open"></div></div>
-        <div class="col"><h3>Running</h3><div id="c-taken"></div></div>
-        <div class="col"><h3>Finished</h3><div id="c-ended"></div></div>
-      </div>
-    </section>
-    <section>
-      <h2>Proposals <span class="n" id="n-proposals">0</span></h2>
-      <div id="proposals"></div>
-    </section>
+
+<div class="wrap" id="view-home" hidden>
+  <div id="home-banner"></div>
+  <div class="toolbar">
+    <input type="search" id="q" placeholder="Search projects, skills, tags…" aria-label="Search projects">
+    <select id="f-join" aria-label="Filter by how projects take members">
+      <option value="">any join mode</option><option value="open">open to join</option><option value="apply">by application</option>
+    </select>
+    <label class="note"><input type="checkbox" id="f-mine"> only mine</label>
   </div>
-  <div>
-    <section>
-      <h2>Leases held now <span class="n" id="n-leases">0</span></h2>
-      <div id="leases"></div>
-    </section>
-    <section>
-      <h2>Agents <span class="n" id="n-actors">0</span></h2>
-      <div class="tree" id="tree"></div>
-    </section>
-    <section>
-      <h2>Activity</h2>
-      <div class="feed" id="feed"></div>
-    </section>
+  <div class="toolbar" id="tags"></div>
+  <h2>Projects <span class="n" id="n-projects">0</span></h2>
+  <div class="grid" id="projects"></div>
+  <section style="margin-top:20px">
+    <h2>Catalogs you follow <span class="n" id="n-cats">0</span></h2>
+    <div id="cats"></div>
+    <div class="form" style="grid-template-columns: minmax(0, 1fr) auto">
+      <label>Catalog URL or path<input id="cat-src" placeholder="https://example.org/catalog.json"></label>
+      <button class="primary" id="cat-add">Follow</button>
+    </div>
+    <div id="cat-msg"></div>
+    <details style="margin-top:10px" id="problems-box" hidden><summary id="problems-sum"></summary><ul id="problems" class="note"></ul></details>
+  </section>
+</div>
+
+<div class="wrap" id="view-project" hidden>
+  <div id="p-banner"></div>
+  <section class="phead" id="p-head"></section>
+  <main>
+    <div class="stack">
+      <section><h2>Waiting for you <span class="n" id="n-pending">0</span></h2><div id="pending"></div></section>
+      <section>
+        <h2>Task board <span class="n" id="n-tasks">0</span></h2>
+        <div class="board">
+          <div class="col"><h3>Open</h3><div id="c-open"></div></div>
+          <div class="col"><h3>Running</h3><div id="c-taken"></div></div>
+          <div class="col"><h3>Finished</h3><div id="c-ended"></div></div>
+        </div>
+      </section>
+      <section><h2>Proposals <span class="n" id="n-proposals">0</span></h2><div id="proposals"></div></section>
+    </div>
+    <div class="stack">
+      <section><h2>Leases held now <span class="n" id="n-leases">0</span></h2><div id="leases"></div></section>
+      <section><h2>Agents <span class="n" id="n-actors">0</span></h2><div class="tree" id="tree"></div></section>
+      <section><h2>Applications <span class="n" id="n-apps">0</span></h2><div id="apps"></div></section>
+      <section><h2>Activity</h2><div class="feed" id="feed"></div></section>
+    </div>
+  </main>
+</div>
+
+<dialog id="help-dlg" aria-labelledby="help-title">
+  <h3 id="help-title">Help this project</h3>
+  <div class="note" id="help-sub"></div>
+  <div class="fields">
+    <label>Your agent's name<input id="h-actor" autocomplete="off"></label>
+    <label>Role<select id="h-role"></select></label>
+    <label>Work under (optional: the orchestrator or planner you want)<input id="h-parent" autocomplete="off"></label>
+    <label>Skills (comma separated)<input id="h-skills"></label>
+    <label>Models you run (comma separated)<input id="h-models" placeholder="claude-haiku-5-5"></label>
+    <label>Hardware (comma separated)<input id="h-hardware" placeholder="gpu:vulkan, 32GB"></label>
+    <label>Note to the project<textarea id="h-note" rows="3" maxlength="2000"></textarea></label>
   </div>
-</main>
+  <div class="note">This adds an application to the project's log; if you don't have the log yet, it is fetched first.
+    Nothing runs: your agents only start when you run them, with your own agent command.</div>
+  <div id="h-msg"></div>
+  <div class="btns" style="margin-top:12px; justify-content:flex-end">
+    <button id="h-cancel">Close</button><button class="primary" id="h-send">Apply</button>
+  </div>
+</dialog>
+
 <script>
 "use strict";
 const token = new URLSearchParams(location.hash.slice(1)).get("token") || "";
-let state = null, last = "", busy = false;
+let dir = null, state = null, lastDir = "", lastState = "", busy = false, helpFor = null, timer = null;
+const tagFilter = new Set();
 
 function el(tag, attrs, ...kids) {
   const n = document.createElement(tag);
@@ -153,123 +221,296 @@ function el(tag, attrs, ...kids) {
   for (const kid of kids.flat()) if (kid != null && kid !== false) n.append(kid.nodeType ? kid : String(kid));
   return n;
 }
-const pill = (s) => el("span", {class: "pill " + s}, s.replace("_", " "));
+const $ = (id) => document.getElementById(id);
+const pill = (s, text) => el("span", {class: "pill " + s}, text || s.replace("_", " "));
 const short = (id) => id ? id.slice(0, 12) : "";
-function ago(ts) {
-  const d = Math.max(0, Math.round(state.now - ts));
+function ago(ts, now) {
+  const d = Math.max(0, Math.round(now - ts));
   return d < 60 ? d + "s" : d < 3600 ? Math.round(d / 60) + "m" : d < 86400 ? Math.round(d / 3600) + "h" : Math.round(d / 86400) + "d";
 }
 function left(s) { return s < 60 ? s + "s" : s < 3600 ? Math.round(s / 60) + "m" : (s / 3600).toFixed(1) + "h"; }
-function fill(id, nodes, emptyText) {
-  const box = document.getElementById(id);
-  box.replaceChildren(...(nodes.length ? nodes : [el("div", {class: "empty"}, emptyText)]));
+function fill(id, nodes, emptyText) { $(id).replaceChildren(...(nodes.length ? nodes : [el("div", {class: "empty"}, emptyText)])); }
+function safeUrl(u) { return typeof u === "string" && /^https?:\/\/\S+$/.test(u) ? u : null; }
+function extLink(u, text) {
+  const ok = safeUrl(u);
+  return ok ? el("a", {href: ok, target: "_blank", rel: "noopener noreferrer nofollow"}, text || ok) : null;
+}
+async function post(path, body) {
+  const r = await fetch(path, {method: "POST", headers: {"Content-Type": "application/json", "X-Baton-Token": token}, body: JSON.stringify(body)});
+  let out = {}; try { out = await r.json(); } catch (e) {}
+  if (!r.ok) throw new Error(out.error || ("HTTP " + r.status));
+  return out;
+}
+function needChips(m) {
+  return (m.needs || []).map(n => el("span", {class: "chip need", title: n.note || ""},
+    (n.count ? n.count + "× " : "") + n.role + ((n.skills || []).length ? ": " + n.skills.join(", ") : "") +
+    ((n.hardware || []).length ? " @ " + n.hardware.join(", ") : "")));
+}
+function joinPill(mode) {
+  return mode === "open" ? pill("open", "open to join") : mode === "closed" ? pill("closed", "closed") : pill("apply", "joins by application");
+}
+const setLive = (ok) => el("span", {class: "live" + (ok ? "" : " stale")}, el("i"), el("span", {}, ok ? "live" : "offline"));
+const meText = (me) => me ? "acting as " + me : "read-only";
+
+// ---- routing ------------------------------------------------------------------------------------------------------
+const current = () => new URLSearchParams(location.search).get("p");
+function go(key) {
+  history.pushState(null, "", (key ? "/?p=" + encodeURIComponent(key) : "/") + location.hash);
+  lastState = ""; state = null; route();
+}
+window.addEventListener("popstate", () => { lastState = ""; route(); });
+$("home-link").addEventListener("click", (ev) => { ev.preventDefault(); go(null); });
+function route() {
+  const key = current();
+  $("view-home").hidden = !!key; $("view-project").hidden = !key;
+  clearInterval(timer);
+  if (key) { refreshProject(); timer = setInterval(refreshProject, 2000); }
+  else { refreshDir(); timer = setInterval(refreshDir, 5000); }
 }
 
-async function decide(id, decision, errBox) {
-  if (busy) return;
-  let reason = "";
-  if (decision === "reject") { reason = prompt("Why reject it? (optional)") ?? null; if (reason === null) return; }
-  if (decision === "execute" && !confirm("Run this action now? It leaves this machine and cannot be undone.")) return;
-  busy = true; errBox.textContent = "";
+// ---- directory ----------------------------------------------------------------------------------------------------
+async function refreshDir(fresh) {
   try {
-    const r = await fetch("api/decide", {method: "POST", headers: {"Content-Type": "application/json", "X-Baton-Token": token},
-      body: JSON.stringify({proposal: id, decision, reason})});
-    const out = await r.json();
-    if (!r.ok) errBox.textContent = out.error || ("HTTP " + r.status);
-  } catch (e) { errBox.textContent = String(e); }
-  busy = false; last = ""; refresh();
+    const r = await fetch("/api/projects" + (fresh ? "?fresh=1" : ""), {cache: "no-store"});
+    const text = await r.text();
+    if (text !== lastDir) { lastDir = text; dir = JSON.parse(text); if (!current()) renderDir(); }
+  } catch (e) { $("stats").replaceChildren(setLive(false)); }
 }
+const knownProjects = () => Object.fromEntries((dir ? dir.projects : []).filter(p => p.manifest).map(p => [p.manifest.id, p]));
+function linkChip(l, known) {
+  const k = l.project && known[l.project];
+  const name = l.name || (k ? k.manifest.name : short(l.project) || "manifest");
+  return el("span", {class: "chip"}, l.rel + " ",
+    k ? el("button", {class: "link", onclick: () => openProject(k)}, name) : l.manifest ? extLink(l.manifest, name) : name);
+}
+function openProject(k) {
+  if (k.local) return go(k.key);
+  go(null); $("q").value = k.manifest.id.slice(0, 12); renderDir();
+}
+function projectCard(e) {
+  const m = e.manifest, act = m.activity || {}, known = knownProjects();
+  return el("article", {class: "proj"},
+    el("div", {class: "row"}, el("h3", {}, m.name), e.local ? pill("local", e.trusted ? "yours" : "joined") : null, joinPill(m.join)),
+    m.summary ? el("div", {class: "sum"}, m.summary) : null,
+    (m.tags || []).length ? el("div", {class: "row"}, m.tags.map(t => el("span", {class: "chip"}, "#" + t))) : null,
+    (m.needs || []).length ? el("div", {class: "row"}, el("span", {class: "label"}, "needs"), needChips(m)) : null,
+    Object.keys(act).length ? el("div", {class: "act"},
+      el("span", {}, el("b", {}, act.open_tasks ?? 0), " open tasks"), el("span", {}, el("b", {}, act.running ?? 0), " running"),
+      el("span", {}, el("b", {}, act.agents ?? 0), " agents"), el("span", {}, el("b", {}, act.done ?? 0), " done")) : null,
+    (m.links || []).length ? el("div", {class: "row"}, el("span", {class: "label"}, "links"), m.links.map(l => linkChip(l, known))) : null,
+    el("div", {class: "note"}, "from " + e.sources.join(", "), m.repo ? " · " : "", extLink(m.repo, "repo"), m.homepage ? " · " : "", extLink(m.homepage, "site")),
+    el("div", {class: "btns"},
+      e.local ? el("button", {class: "primary", onclick: () => go(e.key)}, "Open") : null,
+      m.join !== "closed" ? el("button", {class: e.local ? "" : "primary", disabled: !dir.me, title: dir.me ? "" : "read-only",
+        onclick: () => openHelp(e)}, "Help") : null));
+}
+function matches(e, q) {
+  const m = e.manifest;
+  const hay = [m.id, m.name, m.summary, m.description, ...(m.tags || []),
+    ...(m.needs || []).flatMap(n => [n.role, ...(n.skills || []), ...(n.hardware || [])])].filter(Boolean).join(" ").toLowerCase();
+  return q.split(/\s+/).every(w => hay.includes(w));
+}
+function renderDir() {
+  $("crumb").replaceChildren(el("span", {}, "Projects"));
+  $("stats").replaceChildren(el("span", {}, el("b", {}, dir.projects.length), " projects"), el("span", {}, meText(dir.me)), setLive(true));
+  $("home-banner").replaceChildren(...(dir.me ? [] : [el("div", {class: "banner"}, "Read-only. Start it with `baton ui --actor human:<you>` to apply, admit and approve.")]));
+  const tags = [...new Set(dir.projects.flatMap(p => (p.manifest && p.manifest.tags) || []))].sort();
+  $("tags").replaceChildren(...tags.map(t => el("button", {class: "chip" + (tagFilter.has(t) ? " on" : ""), "aria-pressed": tagFilter.has(t) ? "true" : "false",
+    onclick: () => { tagFilter.has(t) ? tagFilter.delete(t) : tagFilter.add(t); renderDir(); }}, "#" + t)));
+  const q = $("q").value.trim().toLowerCase(), jm = $("f-join").value, mine = $("f-mine").checked;
+  const shown = dir.projects.filter(e => e.manifest && (!q || matches(e, q)) && (!jm || (e.manifest.join || "apply") === jm)
+    && (!mine || e.local) && [...tagFilter].every(t => (e.manifest.tags || []).includes(t)));
+  $("n-projects").textContent = shown.length;
+  fill("projects", shown.map(projectCard), dir.projects.length ? "No project matches." :
+    "No projects yet. Create one with `baton project create --name …`, or follow a catalog below.");
+  $("n-cats").textContent = dir.catalogs.length;
+  fill("cats", dir.catalogs.map(c => el("div", {class: "row", style: "padding:4px 0"},
+    el("span", {class: "mono", style: "overflow-wrap:anywhere;flex:1"}, c),
+    el("button", {class: "danger", disabled: !dir.me, onclick: () => catalog("remove", c)}, "Unfollow"))), "You follow no catalogs.");
+  $("problems-box").hidden = !dir.problems.length;
+  $("problems-sum").textContent = dir.problems.length + " problem(s) reading projects and catalogs";
+  $("problems").replaceChildren(...dir.problems.map(p => el("li", {}, p)));
+}
+async function catalog(action, source) {
+  const msg = $("cat-msg"); msg.replaceChildren();
+  try { await post("/api/catalogs", {action, source}); if (action === "add") $("cat-src").value = ""; await refreshDir(true); }
+  catch (e) { msg.replaceChildren(el("div", {class: "err"}, e.message)); }
+}
+$("cat-add").addEventListener("click", () => catalog("add", $("cat-src").value.trim()));
+for (const id of ["q", "f-join", "f-mine"]) $(id).addEventListener("input", () => renderDir());
 
+// ---- help (apply) -------------------------------------------------------------------------------------------------
+function openHelp(e) {
+  helpFor = e; const m = e.manifest;
+  $("help-title").textContent = "Help " + m.name;
+  $("help-sub").textContent = (m.summary ? m.summary + " " : "") +
+    (m.join === "open" ? "This project is open: you could also join directly." : "A human or orchestrator of the project admits you.");
+  const roles = [...new Set([...(m.needs || []).map(n => n.role), "worker", "orchestrator"])];
+  $("h-role").replaceChildren(...roles.map(r => el("option", {value: r}, r)));
+  const need = (m.needs || [])[0];
+  $("h-skills").value = need && need.skills ? need.skills.join(", ") : "";
+  if (!$("h-actor").value) $("h-actor").value = "helper-" + Math.random().toString(36).slice(2, 6);
+  $("h-msg").replaceChildren(); $("h-send").disabled = false;
+  $("help-dlg").showModal();
+}
+$("h-cancel").addEventListener("click", () => $("help-dlg").close());
+$("h-send").addEventListener("click", async () => {
+  const msg = $("h-msg");
+  msg.replaceChildren(el("div", {class: "note"}, helpFor.local ? "Applying…" : "Fetching the project's log, then applying…"));
+  $("h-send").disabled = true;
+  try {
+    const out = await post("/api/volunteer", {project: helpFor.manifest.id, actor: $("h-actor").value.trim(), role: $("h-role").value,
+      parent: $("h-parent").value.trim(), skills: $("h-skills").value, models: $("h-models").value,
+      hardware: $("h-hardware").value, note: $("h-note").value});
+    msg.replaceChildren(el("div", {class: "okmsg"}, "Applied as " + $("h-actor").value.trim() + "."),
+      el("div", {class: "note"}, out.deliver), el("div", {class: "mono note"}, out.file));
+    lastState = ""; await refreshDir(true); if (current()) refreshProject();
+  } catch (e) { msg.replaceChildren(el("div", {class: "err"}, e.message)); $("h-send").disabled = false; }
+});
+
+// ---- one project --------------------------------------------------------------------------------------------------
+async function refreshProject() {
+  const key = current();
+  try {
+    if (!dir) await refreshDir();
+    const r = await fetch("/api/p/" + encodeURIComponent(key) + "/state", {cache: "no-store"});
+    const text = await r.text();
+    if (!r.ok) { $("p-banner").replaceChildren(el("div", {class: "banner"}, (JSON.parse(text).error) || "not found")); return; }
+    if (text !== lastState && !busy) { lastState = text; state = JSON.parse(text); renderProject(); }
+  } catch (e) { $("stats").replaceChildren(setLive(false)); }
+}
+async function act(path, body, errBox) {
+  if (busy) return; busy = true; errBox.textContent = "";
+  try { await post(path, body); } catch (e) { errBox.textContent = e.message; }
+  busy = false; lastState = ""; refreshProject();
+}
+function decideBtn(label, body, cls, enabled, why, errBox, confirmText) {
+  return el("button", {class: cls || "", disabled: !enabled, title: enabled ? "" : why, onclick: () => {
+    if (confirmText && !confirm(confirmText)) return;
+    if (body.decision === "reject" || body.decision === "decline") { const r = prompt("Reason (optional)"); if (r === null) return; body.reason = r; }
+    act("/api/p/" + encodeURIComponent(current()) + "/decide", body, errBox);
+  }}, label);
+}
+function whyNot(s) { return !s.me ? "read-only" : !s.me_here ? "you are not a human of this project" : ""; }
 function proposalCard(p, actions) {
-  const payload = Object.assign({}, p.payload); const body = payload.body; delete payload.body;
+  const s = state, payload = Object.assign({}, p.payload), body = payload.body; delete payload.body;
   const err = el("div", {class: "err"});
-  const can = !!state.me && p.actor !== state.me;
-  const why = !state.me ? "read-only" : p.actor === state.me ? "your own proposal" : null;
+  const can = s.me_here && p.actor !== s.me, why = whyNot(s) || "your own proposal";
   return el("div", {class: "proposal"},
     el("div", {class: "head"}, pill(p.status), el("span", {class: "what"}, p.action + " → " + (p.target || "-")),
-      el("span", {class: "note"}, "by " + p.actor + " · " + ago(p.ts) + " ago" + (p.decided_by ? " · " + p.status + " by " + p.decided_by : ""))),
+      el("span", {class: "note"}, "by " + p.actor + " · " + ago(p.ts, s.now) + " ago" + (p.decided_by ? " · " + p.status + " by " + p.decided_by : ""))),
     p.reason ? el("div", {class: "note"}, p.reason) : null,
     body ? el("pre", {}, body) : null,
     Object.keys(payload).length ? el("div", {}, Object.entries(payload).map(([k, v]) => el("span", {class: "chip"}, k + ": " + (Array.isArray(v) ? v.join(", ") : v)))) : null,
     p.result ? el("div", {class: "note"}, "result: " + JSON.stringify(p.result)) : null,
-    actions && actions.length ? el("div", {class: "btns", style: "margin-top:8px"},
-      actions.map(([label, d, cls]) => el("button", {class: cls || "", disabled: !can || (d === "execute" && !state.executors.includes(p.action)),
-        title: why || (d === "execute" && !state.executors.includes(p.action) ? "no executor for " + p.action + " yet" : ""),
-        onclick: () => decide(p.id, d, err)}, label))) : null,
-    err);
+    actions.length ? el("div", {class: "btns", style: "margin-top:8px"}, actions.map(([label, d, cls]) => {
+      const noExec = d === "execute" && !s.executors.includes(p.action);
+      return decideBtn(label, {proposal: p.id, decision: d}, cls, can && !noExec, noExec ? "no executor for " + p.action + " yet" : why, err,
+        d === "execute" ? "Run this action now? It leaves this machine and cannot be undone." : null);
+    })) : null, err);
 }
-
+function appCard(a) {
+  const s = state, err = el("div", {class: "err"});
+  const offer = Object.entries(a.offer || {}).map(([k, v]) => el("span", {class: "chip"}, k + ": " + (Array.isArray(v) ? v.join(", ") : JSON.stringify(v))));
+  return el("div", {class: "proposal"},
+    el("div", {class: "head"}, pill(a.status), el("span", {class: "what"}, a.actor + " wants to help"), el("span", {class: "note"},
+      "as " + a.role + (a.parent ? " under " + a.parent : "") + " · " + ago(a.ts, s.now) + " ago" + (a.decided_by ? " · by " + a.decided_by : ""))),
+    offer.length ? el("div", {}, offer) : null,
+    a.note ? el("pre", {}, a.note) : null,
+    a.reason ? el("div", {class: "note"}, a.reason) : null,
+    a.status === "pending" ? el("div", {class: "btns", style: "margin-top:8px"},
+      decideBtn("Admit", {decision: "admit", applicant: a.actor}, "primary", s.me_here, whyNot(s), err),
+      decideBtn("Decline", {decision: "decline", applicant: a.actor}, "danger", s.me_here, whyNot(s), err)) : null, err);
+}
 function taskCard(t, byId) {
-  const parent = t.parent && byId[t.parent];
-  const lease = t.left != null ? el("div", {class: "m"}, "held by " + t.holder + " · " + left(t.left) + " left") : null;
+  const s = state, parent = t.parent && byId[t.parent];
   return el("div", {class: "card" + (t.parent ? " sub" : "")},
     el("div", {class: "t"}, t.title),
-    t.detail ? el("div", {class: "m"}, t.detail) : null,
+    t.detail ? el("div", {class: "m clamp", title: t.detail}, t.detail) : null,
     el("div", {}, pill(t.status), t.role ? el("span", {class: "chip"}, "for " + t.role) : null,
-      t.scope.filter(s => !s.startsWith("task:")).map(s => el("span", {class: "chip"}, s || "(whole repo)"))),
+      t.scope.filter(x => !x.startsWith("task:")).map(x => el("span", {class: "chip"}, x || "(whole repo)"))),
     parent ? el("div", {class: "m"}, "part of “" + parent.title + "”") : null,
     t.subtasks.length ? el("div", {class: "m"}, t.subtasks.length + " subtask(s)") : null,
-    lease,
+    t.left != null ? el("div", {class: "m"}, "held by " + t.holder + " · " + left(t.left) + " left") : null,
     t.summary ? el("div", {class: "m clamp", title: t.summary}, t.summary) : null,
-    el("div", {class: "m"}, short(t.id) + " · posted by " + t.by + " · " + ago(t.created) + " ago"));
+    el("div", {class: "m"}, short(t.id) + " · posted by " + t.by + " · " + ago(t.created, s.now) + " ago"));
 }
-
-function render() {
-  const s = state;
-  document.getElementById("home").textContent = s.home;
+function projectHead() {
+  const s = state, m = s.manifest, known = knownProjects();
+  if (!m) return [el("div", {}, el("h2", {class: "big"}, "Private log"),
+    el("div", {class: "note"}, "This log has no project yet, so it is not listed anywhere. Create one with `baton project create --name …`."),
+    el("div", {class: "note mono"}, s.home))];
+  const err = el("div", {class: "err"});
+  const rel = el("select", {}, ["depends-on", "dependency-of", "related", "fork-of", "upstream", "downstream", "successor", "predecessor"]
+    .map(r => el("option", {value: r}, r)));
+  const pick = el("select", {}, el("option", {value: ""}, "a known project…"),
+    Object.values(known).filter(p => p.manifest.id !== m.id).map(p => el("option", {value: p.manifest.id}, p.manifest.name)));
+  const url = el("input", {placeholder: "https://…/manifest.json"});
+  const self = known[m.id] || {manifest: m, local: true, sources: ["local"], key: current()};
+  return [
+    el("div", {},
+      el("h2", {class: "big"}, m.name),
+      m.summary ? el("div", {}, m.summary) : null,
+      el("div", {class: "row", style: "margin-top:8px"}, joinPill(m.join), (m.tags || []).map(t => el("span", {class: "chip"}, "#" + t))),
+      (m.needs || []).length ? el("div", {class: "row", style: "margin-top:6px"}, el("span", {class: "label"}, "needs"), needChips(m)) : null,
+      m.description ? el("div", {class: "desc clamp", title: m.description}, m.description) : null,
+      el("div", {class: "note", style: "margin-top:8px"}, extLink(m.repo, "repo"), m.repo ? " · " : "", extLink(m.homepage, "site"),
+        m.homepage ? " · " : "", "id ", el("span", {class: "mono"}, short(m.id)), m.log ? " · log " : "", m.log ? el("span", {class: "mono"}, m.log.git) : null),
+      el("div", {class: "links", style: "margin-top:12px"}, el("span", {class: "label"}, "linked projects"),
+        (m.links || []).length ? el("ul", {}, m.links.map(l => el("li", {}, linkChip(l, known)))) : el("div", {class: "note"}, "None yet.")),
+      s.me_here ? el("div", {class: "form"},
+        el("label", {}, "Relation", rel), el("label", {}, "Project", pick), el("label", {}, "or manifest URL", url),
+        el("button", {onclick: () => act("/api/p/" + encodeURIComponent(current()) + "/link",
+          {rel: rel.value, project: pick.value, manifest: url.value.trim(), name: pick.value ? known[pick.value].manifest.name : ""}, err)}, "Add link")) : null,
+      err),
+    el("div", {class: "btns", style: "align-content:start"},
+      m.join !== "closed" ? el("button", {class: "primary", disabled: !s.me, title: s.me ? "" : "read-only", onclick: () => openHelp(self)}, "Help") : null)];
+}
+function renderProject() {
+  const s = state, m = s.manifest;
+  $("crumb").replaceChildren(el("button", {class: "link", onclick: () => go(null)}, "Projects"), " / ", el("b", {}, m ? m.name : "private log"));
   const by = (st) => s.tasks.filter(t => t.status === st).length;
-  document.getElementById("s-events").textContent = s.events;
-  document.getElementById("s-open").textContent = by("open");
-  document.getElementById("s-taken").textContent = by("taken");
-  document.getElementById("s-leases").textContent = s.leases.length;
-  document.getElementById("s-refused").textContent = s.counts.refused + s.counts.denied;
-  document.getElementById("me").textContent = s.me ? "acting as " + s.me : "read-only";
-  document.getElementById("banner").replaceChildren(...(s.me ? [] : [el("div", {class: "banner ro"},
-    "Read-only. Start it with `baton ui --actor <human>` (one of: " + (s.humans.join(", ") || "none in the policy") + ") to approve from here.")]),
-    ...(s.held || s.bad ? [el("div", {class: "banner ro"}, s.held + " event(s) waiting for their parents, " + s.bad + " bad file(s) in the log.")] : []));
-
-  const pending = s.proposals.filter(p => p.status === "pending");
-  document.getElementById("n-pending").textContent = pending.length;
-  fill("pending", pending.map(p => proposalCard(p, [["Approve", "approve", "primary"], ["Reject", "reject", "danger"]])), "Nothing waiting. Proposals from agents land here before anything leaves the machine.");
-
+  $("stats").replaceChildren(el("span", {}, el("b", {}, s.events), " events"), el("span", {}, el("b", {}, by("open")), " open"),
+    el("span", {}, el("b", {}, by("taken")), " running"), el("span", {}, el("b", {}, s.leases.length), " leases"),
+    el("span", {}, el("b", {}, s.counts.refused + s.counts.denied), " refused at the gate"), el("span", {}, meText(s.me)), setLive(true));
+  const banners = [];
+  if (s.me && !s.me_here) banners.push(el("div", {class: "banner"}, s.me + " is not a human of this project (" + (s.humans.join(", ") || "none") + "): you can watch and apply here, not decide."));
+  if (!s.me) banners.push(el("div", {class: "banner"}, "Read-only. Start it with `baton ui --actor human:<you>` to decide."));
+  if (s.held || s.bad) banners.push(el("div", {class: "banner"}, s.held + " event(s) waiting for their parents, " + s.bad + " bad file(s) in the log."));
+  $("p-banner").replaceChildren(...banners);
+  $("p-head").replaceChildren(...projectHead());
+  const pendingApps = s.applications.filter(a => a.status === "pending"), pending = s.proposals.filter(p => p.status === "pending");
+  $("n-pending").textContent = pending.length + pendingApps.length;
+  fill("pending", [...pendingApps.map(appCard), ...pending.map(p => proposalCard(p, [["Approve", "approve", "primary"], ["Reject", "reject", "danger"]]))],
+    "Nothing waiting. Applications and agents' proposals land here before anything happens.");
   const byId = Object.fromEntries(s.tasks.map(t => [t.id, t]));
-  document.getElementById("n-tasks").textContent = s.tasks.length;
+  $("n-tasks").textContent = s.tasks.length;
   fill("c-open", s.tasks.filter(t => t.status === "open").map(t => taskCard(t, byId)), "No open tasks.");
   fill("c-taken", s.tasks.filter(t => t.status === "taken").map(t => taskCard(t, byId)), "Nobody is working.");
   fill("c-ended", s.tasks.filter(t => !["open", "taken"].includes(t.status)).reverse().slice(0, 30).map(t => taskCard(t, byId)), "Nothing finished yet.");
-
   const others = s.proposals.filter(p => p.status !== "pending");
-  document.getElementById("n-proposals").textContent = others.length;
-  fill("proposals", others.slice(0, 25).map(p => proposalCard(p, p.status === "approved" ? [["Execute", "execute", "primary"], ["Reject", "reject", "danger"]] : [])), "No decided or refused proposals yet.");
-
-  document.getElementById("n-leases").textContent = s.leases.length;
+  $("n-proposals").textContent = others.length;
+  fill("proposals", others.slice(0, 25).map(p => proposalCard(p, p.status === "approved" ? [["Execute", "execute", "primary"], ["Reject", "reject", "danger"]] : [])),
+    "No decided or refused proposals yet.");
+  $("n-leases").textContent = s.leases.length;
   fill("leases", s.leases.length ? [el("table", {}, el("tr", {}, el("th", {}, "who"), el("th", {}, "on"), el("th", {}, "left")),
     s.leases.map(l => el("tr", {}, el("td", {}, l.actor, el("div", {class: "note"}, l.task)),
       el("td", {}, [...l.scope.map(x => x || "(whole repo)"), ...l.topics.filter(x => !x.startsWith("task:"))].map(x => el("span", {class: "chip"}, x))),
-      el("td", {class: "num"}, left(l.left), el("div", {class: "bar"}, el("i", {style: "width:" + Math.max(2, Math.min(100, 100 * l.left / l.ttl)) + "%"}))))))] : [], "No leases held.");
-
+      el("td", {class: "num"}, left(l.left), el("div", {class: "bar"}, el("i", {style: "width:" + Math.max(2, Math.min(100, 100 * l.left / l.ttl)) + "%"}))))))] : [],
+    "No leases held.");
   const actors = Object.fromEntries(s.actors.map(a => [a.name, a]));
   const node = (a) => el("li", {}, el("b", {}, a.name), el("span", {class: "role"}, a.role),
     a.model ? el("span", {class: "tier"}, a.model + " · " + a.effort) : null,
     a.children.length ? el("ul", {}, a.children.map(c => node(actors[c]))) : null);
-  document.getElementById("n-actors").textContent = s.actors.filter(a => a.role !== "human").length;
+  $("n-actors").textContent = s.actors.filter(a => a.role !== "human").length;
   fill("tree", s.actors.length ? [el("ul", {}, s.actors.filter(a => !a.parent).map(node))] : [], "No agents have joined.");
-
-  fill("feed", s.feed.map(f => el("div", {}, el("span", {class: "when"}, ago(f.ts)), el("span", {class: "clamp", title: f.text}, el("span", {class: "who"}, f.actor), f.text),
-    f.result === "ok" ? el("span") : pill(f.result))), "No events yet.");
+  const decided = s.applications.filter(a => a.status !== "pending");
+  $("n-apps").textContent = s.applications.length;
+  fill("apps", decided.slice(0, 20).map(appCard), pendingApps.length ? "Pending applications are under “Waiting for you”." : "No applications yet.");
+  fill("feed", s.feed.map(f => el("div", {}, el("span", {class: "when"}, ago(f.ts, s.now)),
+    el("span", {class: "clamp", title: f.text}, el("span", {class: "who"}, f.actor), f.text), f.result === "ok" ? el("span") : pill(f.result))), "No events yet.");
 }
-
-async function refresh() {
-  const live = document.getElementById("live");
-  try {
-    const r = await fetch("api/state", {cache: "no-store"});
-    const text = await r.text();
-    live.classList.remove("stale");
-    if (text !== last && !busy) { last = text; state = JSON.parse(text); render(); }
-  } catch (e) { live.classList.add("stale"); }
-}
-refresh();
-setInterval(refresh, 2000);
+route();
 </script>
 </body>
 </html>

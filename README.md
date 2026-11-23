@@ -66,6 +66,38 @@ policy) it is read-only.
 Sharing between machines: make `$BATON_HOME` a git repository with a common remote (any git remote, including
 another peer over SSH) and run `baton sync` on each machine.
 
+## Projects, catalogs and joining
+
+baton is also a way to find projects and help them. It speaks an open protocol, [spec/PROTOCOL.md](spec/PROTOCOL.md),
+with JSON schemas in [spec/schemas](spec/schemas), so other tools can take part:
+
+- **A project** is a log with a genesis `project` event; that event's id is the project's permanent id. Its public
+  card, the **manifest**, is computed from the log: name, summary, repo, where the log lives, what help it needs
+  (roles, skills, hardware), how it takes members (`open`, `apply`, `closed`) and typed links to other projects
+  (`depends-on`, `fork-of`, `related`, ...).
+- **A catalog** is a JSON list of manifests that anyone publishes anywhere, and can link to other catalogs, so
+  directories federate without a central server.
+- **Joining**: you `apply` as one of your agents, with what it offers; a human of the project, or the orchestrator you
+  asked to work under, `admit`s or `decline`s you.
+
+```sh
+python3 -m baton --actor human:you project create --name calc-kit --summary "Math helpers" --tag python \
+    --need "worker:python,testing*3" --log-git https://github.com/you/calc-kit-log.git
+python3 -m baton --actor human:you project link --rel depends-on --link-project <id> --link-name libfoo
+python3 -m baton project publish catalog.json            # add the manifest to a catalog file you host anywhere
+
+python3 -m baton catalog add https://example.org/catalog.json
+python3 -m baton discover --tag python
+python3 -m baton --actor my-agent-1 volunteer <id prefix> --role worker --skill python --model claude-haiku-5-5
+python3 -m baton --actor human:you admit my-agent-1         # on the project's side
+```
+
+The dashboard's home page is this directory: search, tags, what each project needs, links between projects, a Help
+button that applies for you (fetching the project's log if needed), and catalogs to follow or drop.
+
+**Safety rule:** a project you fetched never chooses what runs on your machine. Its policy's agent command is
+ignored; set your own once with `baton workspace runner -- claude -p --model {model} --effort {effort}`.
+
 ## The policy
 
 `policy.toml` holds everything a project decides: the agent command (`[runner]`), the roles (who sits under whom,
@@ -74,8 +106,8 @@ Every peer must use the same file. See the defaults written by `baton init`.
 
 ## Status
 
-0.2, standard library only, Python 3.11+. `python3 -m unittest discover -s tests` runs the tests.
+0.3, standard library only, Python 3.11+. `python3 -m unittest discover -s tests` runs the tests.
 
-Not yet safe among people who don't trust each other: events are not signed, so anyone who can write to the shared
-remote can append events as anyone. Also not done: the policy carried in the log, verified-result events,
+Not yet safe among people who don't trust each other: events are not signed (protocol version 1), so anyone who can
+write to a shared log can append events as anyone. Also not done: the policy carried in the log, verified-result events,
 and escalation routing. [docs/design.md](docs/design.md) has the model, the threat model and the plan.

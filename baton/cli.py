@@ -15,6 +15,7 @@ import time
 from pathlib import Path
 
 from . import forge
+from . import manifest as mf
 from . import policy as pol
 from . import runner
 from .store import Store
@@ -224,7 +225,181 @@ def cmd_whoami(a):
 
 def cmd_ui(a):
     from . import ui
-    ui.serve(_store(a), a.actor or os.environ.get("BATON_ACTOR"), port=a.port, open_browser=not a.no_open)
+    from .workspace import Workspace
+    ui.serve(Workspace(), a.actor or os.environ.get("BATON_ACTOR"), port=a.port, open_browser=not a.no_open,
+             extra_home=Path(a.home))
+    return 0
+
+
+# -- projects, catalogs and joining (spec/PROTOCOL.md sections 6-8) --------------------------------------------------
+def _project_fields(a) -> dict:
+    f = {}
+    for k in ("name", "summary", "description", "homepage", "repo", "join"):
+        v = getattr(a, k, None)
+        if v is not None:
+            f[k] = v
+    if getattr(a, "log_git", None):
+        f["log"] = {"git": a.log_git, **({"branch": a.log_branch} if a.log_branch else {})}
+    if getattr(a, "inbox", None):
+        f["inbox"] = {"type": "git" if mf.git_url_ok(a.inbox) and not a.inbox.startswith("http") else "url", "url": a.inbox}
+    if getattr(a, "tag", None):
+        f["tags"] = a.tag
+    if getattr(a, "need", None):
+        needs = []
+        for spec in a.need:   # role[:skill,skill][@hardware,hardware][*count]
+            count = None
+            if "*" in spec:
+                spec, count = spec.rsplit("*", 1)
+            hw = []
+            if "@" in spec:
+                spec, h = spec.split("@", 1)
+                hw = [x for x in h.split(",") if x]
+            role, _, sk = spec.partition(":")
+            n = {"role": role, "skills": [x for x in sk.split(",") if x]}
+            if hw:
+                n["hardware"] = hw
+            if count:
+                n["count"] = int(count)
+            needs.append(n)
+        f["needs"] = needs
+    return f
+
+
+def cmd_project(a):
+    from .workspace import Workspace, manifest_of, publish
+    store = _store(a)
+    if a.action in ("create", "set"):
+        s = store.state()
+        if a.action == "create" and s.project_id:
+            sys.exit(f"baton: this log is already project {s.project_id[:12]}; use `project set`")
+        if a.action == "set" and not s.project_id:
+            sys.exit("baton: no project here yet; use `project create`")
+        code = _emit(a, "project", _project_fields(a))
+        s = store.state()
+        if code == 0 and a.action == "create":
+            Workspace().add_project(s.project_id, store.home, trusted=True)
+            print(f"project {s.project_id} created and added to your workspace")
+        return code
+    if a.action == "link":
+        s = store.state()
+        link = {"rel": a.rel}
+        for k in ("project", "manifest", "name"):
+            if getattr(a, "link_" + k):
+                link[k] = getattr(a, "link_" + k)
+        links = [l for l in s.project.get("links", []) if l != link] + [link]
+        return _emit(a, "project", {"links": links})
+    m = manifest_of(store)
+    if m is None:
+        sys.exit("baton: this log has no project; use `project create`")
+    if a.action == "publish":
+        publish(Path(a.catalog), m)
+        print(f"published {m['name']} into {a.catalog}")
+        return 0
+    print(json.dumps(m, indent=1, ensure_ascii=False))
+    return 0
+
+
+def cmd_catalog(a):
+    from .workspace import Workspace
+    ws = Workspace()
+    if a.action == "add":
+        ws.add_catalog(a.source)
+    elif a.action == "remove":
+        ws.remove_catalog(a.source)
+    elif a.action == "new":
+        Path(a.source).write_text(json.dumps(mf.new_catalog(a.name or Path(a.source).stem, a.description or ""),
+                                             indent=1) + "\n", encoding="utf-8", newline="\n")
+        print(f"wrote {a.source}; add projects with `baton project publish {a.source}`")
+        return 0
+    for c in ws.load()["catalogs"]:
+        print(c)
+    return 0
+
+
+def cmd_discover(a):
+    from .workspace import Workspace
+    entries, problems = Workspace().discover()
+    for e in entries:
+        m = e["manifest"]
+        if a.tag and not set(a.tag) <= set(m.get("tags", [])):
+            continue
+        needs = ", ".join(n["role"] + (":" + "/".join(n.get("skills", [])) if n.get("skills") else "") for n in m.get("needs", []))
+        act = m.get("activity", {})
+        print(f"{m['id'][:12]} {m['name']}  [{'local' if e['local'] else ', '.join(e['sources'])}] join={m.get('join', 'apply')}")
+        if m.get("summary"):
+            print(f"    {m['summary']}")
+        if needs or act:
+            print(f"    needs: {needs or '-'}" + (f"   open tasks: {act.get('open_tasks')}, agents: {act.get('agents')}" if act else ""))
+    for p in problems:
+        print(f"! {p}", file=sys.stderr)
+    return 0
+
+
+def _find_manifest(project: str):
+    from .workspace import Workspace
+    entries, _ = Workspace().discover()
+    hits = [e for e in entries if e["manifest"]["id"].startswith(project)]
+    if len(hits) != 1:
+        raise KeyError(f"{project!r} matches {len(hits)} known projects")
+    return hits[0]
+
+
+def cmd_volunteer(a):
+    offer = {}
+    for k in ("skill", "model", "hardware"):
+        if getattr(a, k):
+            offer[k + ("s" if k != "hardware" else "")] = getattr(a, k)
+    from .workspace import Workspace, volunteer
+    out = volunteer(Workspace(), _find_manifest(a.project), _actor(a), a.role, a.parent, offer, a.note or "")
+    print(f"applied ({out['event'][:12]}); log at {out['home']}\n{out['deliver']}")
+    return 0
+
+
+def cmd_applications(a):
+    s = _store(a).state()
+    for x in s.applications.values():
+        if a.all or x.status == "pending":
+            print(f"{x.actor} {x.status} as {x.role}" + (f" under {x.parent}" if x.parent else "")
+                  + (f" offer={json.dumps(x.offer)}" if x.offer else "") + (f" : {x.note}" if x.note else ""))
+    return 0
+
+
+def cmd_admit(a):
+    body = {"applicant": a.applicant}
+    if a.cmd == "admit":
+        if a.role:
+            body["role"] = a.role
+        if a.parent:
+            body["parent"] = a.parent
+    elif a.reason:
+        body["reason"] = a.reason
+    return _emit(a, a.cmd, body)
+
+
+def cmd_import(a):
+    store = _store(a)
+    for f in a.files:
+        e = store.import_file(f)
+        print(f"imported {e.kind} {e.id[:12]} by {e.actor}")
+    return 0
+
+
+def cmd_export_event(a):
+    found, _ = _store(a).read()
+    print(json.dumps(found[_store(a).resolve(a.event, found)].to_dict(), indent=1, ensure_ascii=False))
+    return 0
+
+
+def cmd_workspace(a):
+    from .workspace import Workspace
+    ws = Workspace()
+    if a.action == "runner":
+        cmd = [x for x in a.command if x != "--"]
+        if cmd:
+            ws.set_runner(cmd)
+        print(json.dumps(ws.runner()))
+        return 0
+    print(json.dumps({"dir": str(ws.dir), **ws.load()}, indent=1))
     return 0
 
 
@@ -270,6 +445,42 @@ def main(argv=None) -> int:
     p.set_defaults(fn=cmd_execute)
     p = sub.add_parser("status"); p.add_argument("--all", action="store_true"); p.set_defaults(fn=cmd_status)
     sub.add_parser("whoami").set_defaults(fn=cmd_whoami)
+    p = sub.add_parser("project", help="create, change, link and publish this log's project")
+    p.add_argument("action", choices=("create", "set", "show", "link", "publish"))
+    p.add_argument("catalog", nargs="?", help="publish: the catalog file to add the manifest to")
+    for k in ("name", "summary", "description", "homepage", "repo"):
+        p.add_argument("--" + k)
+    p.add_argument("--join", choices=mf.JOIN_MODES); p.add_argument("--log-git"); p.add_argument("--log-branch")
+    p.add_argument("--inbox", help="where applications are sent: a git URL or an http(s) URL")
+    p.add_argument("--tag", action="append")
+    p.add_argument("--need", action="append", help="role[:skill,skill][@hardware][*count], e.g. worker:python,c@gpu*3")
+    p.add_argument("--rel", choices=mf.RELS, default="related")
+    p.add_argument("--link-project", help="link: the other project's id"); p.add_argument("--link-manifest")
+    p.add_argument("--link-name")
+    p.set_defaults(fn=cmd_project)
+    p = sub.add_parser("catalog", help="the catalogs you follow, or make a new catalog file")
+    p.add_argument("action", choices=("list", "add", "remove", "new")); p.add_argument("source", nargs="?")
+    p.add_argument("--name"); p.add_argument("--description"); p.set_defaults(fn=cmd_catalog)
+    p = sub.add_parser("discover", help="every project your workspace and catalogs know")
+    p.add_argument("--tag", action="append"); p.set_defaults(fn=cmd_discover)
+    p = sub.add_parser("volunteer", help="apply to help a project, as one of your agents")
+    p.add_argument("project", help="project id prefix"); p.add_argument("--role", default="worker")
+    p.add_argument("--parent"); p.add_argument("--skill", action="append"); p.add_argument("--model", action="append")
+    p.add_argument("--hardware", action="append"); p.add_argument("--note"); p.set_defaults(fn=cmd_volunteer)
+    p = sub.add_parser("applications"); p.add_argument("--all", action="store_true"); p.set_defaults(fn=cmd_applications)
+    for name in ("admit", "decline"):
+        p = sub.add_parser(name); p.add_argument("applicant")
+        if name == "admit":
+            p.add_argument("--role"); p.add_argument("--parent")
+        else:
+            p.add_argument("--reason")
+        p.set_defaults(fn=cmd_admit)
+    p = sub.add_parser("import", help="take in event files sent by other means"); p.add_argument("files", nargs="+")
+    p.set_defaults(fn=cmd_import)
+    p = sub.add_parser("export-event"); p.add_argument("event"); p.set_defaults(fn=cmd_export_event)
+    p = sub.add_parser("workspace", help="show the workspace, or set your own agent command")
+    p.add_argument("action", nargs="?", choices=("show", "runner"), default="show")
+    p.add_argument("command", nargs=argparse.REMAINDER); p.set_defaults(fn=cmd_workspace)
     p = sub.add_parser("ui", help="a local dashboard; approve and reject from the browser")
     p.add_argument("--port", type=int, default=8765); p.add_argument("--no-open", action="store_true")
     p.set_defaults(fn=cmd_ui)
@@ -278,7 +489,7 @@ def main(argv=None) -> int:
     a = ap.parse_args(argv)
     try:
         return a.fn(a)
-    except (KeyError, ValueError, LookupError, RuntimeError, NotImplementedError) as err:
+    except (KeyError, ValueError, LookupError, RuntimeError, NotImplementedError, OSError) as err:
         print(f"baton: {err}", file=sys.stderr)
         return 2
 

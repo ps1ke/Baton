@@ -1,0 +1,43 @@
+{
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "$id": "https://baton.invalid/schemas/1/manifest.schema.json",
+ "title": "baton project manifest (protocol 1)",
+ "type": "object",
+ "required": ["baton", "id", "name"],
+ "properties": {
+  "baton": {"const": "1"},
+  "id": {"type": "string", "pattern": "^[0-9a-f]{64}$", "description": "the genesis event id"},
+  "name": {"type": "string", "minLength": 1, "maxLength": 120},
+  "summary": {"type": "string", "minLength": 1, "maxLength": 280},
+  "description": {"type": "string", "minLength": 1, "maxLength": 10000},
+  "homepage": {"$ref": "#/$defs/http"},
+  "repo": {"$ref": "#/$defs/http"},
+  "log": {"type": "object", "required": ["git"], "properties": {
+    "git": {"$ref": "#/$defs/git"},
+    "branch": {"type": "string", "pattern": "^[\\w./-]{1,100}$"}}},
+  "inbox": {"type": "object", "required": ["type", "url"], "properties": {
+    "type": {"enum": ["git", "url"]}, "url": {"type": "string", "maxLength": 500}}},
+  "tags": {"type": "array", "maxItems": 20, "items": {"type": "string", "pattern": "^[a-z0-9][a-z0-9+.-]{0,39}$"}},
+  "needs": {"type": "array", "maxItems": 50, "items": {"type": "object", "required": ["role"], "properties": {
+    "role": {"type": "string", "minLength": 1},
+    "skills": {"type": "array", "maxItems": 20, "items": {"type": "string", "minLength": 1, "maxLength": 40}},
+    "hardware": {"type": "array", "maxItems": 10, "items": {"type": "string", "minLength": 1, "maxLength": 80}},
+    "count": {"type": "integer", "minimum": 0, "maximum": 10000},
+    "note": {"type": "string", "maxLength": 500}}}},
+  "join": {"enum": ["open", "apply", "closed"]},
+  "links": {"type": "array", "maxItems": 100, "items": {"type": "object", "required": ["rel"],
+    "anyOf": [{"required": ["project"]}, {"required": ["manifest"]}],
+    "properties": {
+     "rel": {"enum": ["depends-on", "dependency-of", "related", "fork-of", "upstream", "downstream", "successor", "predecessor"]},
+     "project": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+     "manifest": {"$ref": "#/$defs/http"},
+     "name": {"type": "string", "minLength": 1, "maxLength": 120}}}},
+  "humans": {"type": "array", "maxItems": 100, "items": {"type": "string", "minLength": 1, "maxLength": 120}},
+  "updated": {"type": "string", "description": "RFC 3339 UTC time of the last project event"},
+  "activity": {"type": "object", "description": "informational snapshot computed by the publishing peer"}
+ },
+ "$defs": {
+  "http": {"type": "string", "pattern": "^https?://\\S+$", "maxLength": 500},
+  "git": {"type": "string", "maxLength": 500, "pattern": "^(https://|ssh://|git@[\\w.-]+:|file://)\\S+$", "not": {"pattern": "::"}}
+ }
+}

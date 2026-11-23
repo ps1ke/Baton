@@ -11,6 +11,7 @@ from collections import deque
 from dataclasses import dataclass, field
 
 from . import events as ev
+from . import manifest as mf
 from . import paths
 from .policy import Policy
 
@@ -56,6 +57,20 @@ OUTCOMES = ("done", "failed", "escalated")
 
 
 @dataclass
+class Application:
+    id: str
+    actor: str
+    role: str
+    parent: str | None
+    offer: dict
+    note: str
+    ts: float
+    status: str = "pending"     # pending admitted declined
+    decided_by: str = ""
+    reason: str = ""
+
+
+@dataclass
 class Proposal:
     id: str
     actor: str
@@ -92,7 +107,16 @@ class State:
     denied: dict[str, str] = field(default_factory=dict)        # claim event id -> why
     proposals: dict[str, Proposal] = field(default_factory=dict)
     tasks: dict[str, Task] = field(default_factory=dict)
+    applications: dict[str, Application] = field(default_factory=dict)
+    project_id: str | None = None                               # the genesis `project` event
+    project: dict = field(default_factory=dict)                 # the project's current public fields
+    project_updated: float = 0.0
     ignored: dict[str, str] = field(default_factory=dict)       # event id -> why it had no effect
+
+    @property
+    def join_mode(self) -> str:
+        """A log with no `project` event is a private workspace: anyone may join, as before the protocol had projects."""
+        return self.project.get("join", "apply") if self.project_id else "open"
 
     def task_status(self, task: Task, t: float) -> str:
         """open, taken, or the outcome. A task whose lease lapsed without a `done` is open again."""
@@ -164,13 +188,18 @@ class _Folder:
             return None if a.role in self.p.approver_roles else f"role {a.role} cannot approve"
         if need == "execute":
             return None if a.role in self.p.approver_roles else f"role {a.role} cannot execute"
+        if need == "govern":
+            return None if a.role in self.p.approver_roles else f"role {a.role} cannot change the project"
+        if need == "admit":   # approvers, or a role that may admit (then only under itself: on_admit checks)
+            ok = a.role in self.p.approver_roles or "admit" in self.p.roles[a.role].can
+            return None if ok else f"role {a.role} cannot admit members"
         return None if need in self.p.roles[a.role].can else f"role {a.role} cannot {need}"
 
     def run(self, ordered: list[ev.Event]) -> State:
         for e in ordered:
             t = max([e.ts] + [self.eff.get(pid, 0.0) for pid in e.parents])
             self.eff[e.id] = t
-            if e.kind != "join":
+            if e.kind not in ("join", "apply"):
                 why = self.allowed(e)
                 if why:
                     self.ignore(e, why)
@@ -182,25 +211,103 @@ class _Folder:
         return self.s
 
     # -- tree ---------------------------------------------------------------------------------------------------
-    def on_join(self, e, t):
-        if e.actor in self.s.actors:
-            return self.ignore(e, "already joined")
-        role = self.p.roles.get(e.body["role"])
+    def _place(self, name: str, role_name, parent) -> str | None:
+        """Add `name` to the tree as `role_name` under `parent`; the reason it cannot be, if it cannot."""
+        if name in self.s.actors:
+            return "already joined"
+        role = self.p.roles.get(role_name)
         if role is None:
-            return self.ignore(e, f"unknown role {e.body['role']!r}")
-        parent = e.body.get("parent")
+            return f"unknown role {role_name!r}"
         if role.under == "human":
             if parent not in self.p.humans:
-                return self.ignore(e, f"a {role.name} must join under a human ({sorted(self.p.humans)})")
+                return f"a {role.name} must join under a human ({sorted(self.p.humans)})"
         else:
             pa = self.s.actors.get(parent)
             if pa is None or pa.role != role.under:
-                return self.ignore(e, f"a {role.name} must join under a {role.under}")
+                return f"a {role.name} must join under a {role.under}"
             if len(pa.children) >= self.p.roles[pa.role].max_children:
-                return self.ignore(e, f"{parent} already has {len(pa.children)} children (max_children)")
-        self.s.actors[e.actor] = Actor(e.actor, role.name, parent, role.model, role.effort)
+                return f"{parent} already has {len(pa.children)} children (max_children)"
+        self.s.actors[name] = Actor(name, role.name, parent, role.model, role.effort)
         if parent in self.s.actors:
-            self.s.actors[parent].children.append(e.actor)
+            self.s.actors[parent].children.append(name)
+        return None
+
+    def on_join(self, e, t):
+        if self.s.join_mode != "open":
+            return self.ignore(e, f"this project takes members by application (join: {self.s.join_mode})")
+        why = self._place(e.actor, e.body["role"], e.body.get("parent"))
+        if why:
+            self.ignore(e, why)
+
+    # -- the project and its members ----------------------------------------------------------------------------
+    def on_project(self, e, t):
+        fields = {k: v for k, v in e.body.items()}
+        errors = mf.check_fields(fields)
+        if not errors and set(fields) - set(mf.FIELDS):
+            errors = [f"a project event sets only {', '.join(mf.FIELDS)}"]
+        if errors:
+            return self.ignore(e, "; ".join(errors))
+        if self.s.project_id is None:
+            if not fields.get("name"):
+                return self.ignore(e, "the first project event (the genesis) needs a name")
+            self.s.project_id = e.id
+        for k, v in fields.items():
+            if v is None:
+                self.s.project.pop(k, None)
+            else:
+                self.s.project[k] = v
+        self.s.project_updated = t
+
+    def on_apply(self, e, t):
+        if e.actor in self.s.actors:
+            return self.ignore(e, "already a member")
+        if self.s.join_mode == "closed":
+            return self.ignore(e, "this project is closed to new members")
+        if any(a.actor == e.actor and a.status == "pending" for a in self.s.applications.values()):
+            return self.ignore(e, "an application from this actor is already pending")
+        b = e.body
+        if b.get("role") not in self.p.roles:
+            return self.ignore(e, f"unknown role {b.get('role')!r}")
+        offer = b.get("offer", {})
+        if not isinstance(offer, dict) or len(ev.canonical(offer)) > 4000:
+            return self.ignore(e, "offer must be an object of at most 4000 bytes")
+        note = b.get("note", "")
+        if not isinstance(note, str) or len(note) > 2000:
+            return self.ignore(e, "note must be a string of at most 2000 characters")
+        self.s.applications[e.id] = Application(e.id, e.actor, b["role"], b.get("parent"), offer, note, t)
+
+    def _application(self, e) -> Application | None:
+        name = e.body["applicant"]
+        pending = [a for a in self.s.applications.values() if a.actor == name and a.status == "pending"]
+        if not pending:
+            self.ignore(e, f"no pending application from {name}")
+            return None
+        return pending[-1]
+
+    def _may_decide(self, e, parent) -> bool:
+        a = self.s.actors[e.actor]
+        if a.role == "human" or a.role in self.p.approver_roles or parent == e.actor:
+            return True
+        self.ignore(e, "a member admits or declines only applicants who would sit under it")
+        return False
+
+    def on_admit(self, e, t):
+        app = self._application(e)
+        if app is None:
+            return
+        role, parent = e.body.get("role", app.role), e.body.get("parent", app.parent)
+        if not self._may_decide(e, parent):
+            return
+        why = self._place(app.actor, role, parent)
+        if why:
+            return self.ignore(e, why)
+        app.status, app.decided_by = "admitted", e.actor
+
+    def on_decline(self, e, t):
+        app = self._application(e)
+        if app is None or not self._may_decide(e, app.parent):
+            return
+        app.status, app.decided_by, app.reason = "declined", e.actor, str(e.body.get("reason", ""))[:500]
 
     # -- tasks ------------------------------------------------------------------------------------------------
     def on_task(self, e, t):

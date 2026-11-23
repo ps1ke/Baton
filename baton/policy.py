@@ -64,6 +64,7 @@ class Policy:
 
     def role_of_kind(self, kind: str) -> str:
         return {"claim": "claim", "renew": "claim", "release": "claim", "done": "claim", "task": "plan",
+                "project": "govern", "admit": "admit", "decline": "admit",
                 "propose": "propose",
                 "approve": "approve", "reject": "approve", "executed": "execute"}.get(kind, kind)
 
@@ -94,7 +95,7 @@ under = "planner"
 model = "claude-sonnet-5-5"
 effort = "medium"
 max_children = 6
-can = ["plan", "claim", "propose"]
+can = ["plan", "claim", "propose", "admit"]   # admit: may take applicants in as its own workers
 
 [roles.worker]
 under = "orchestrator"

@@ -1,6 +1,6 @@
 [project]
 name = "baton"
-version = "0.2.0"
+version = "0.3.0"
 description = "Coordination for many AI agents working on one project: tasks, leases, tiers, rate budgets and an approval gate, peer-to-peer."
 readme = "README.md"
 requires-python = ">=3.11"

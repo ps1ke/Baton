@@ -60,15 +60,29 @@ class Run:
                 raise LookupError(f"no open task for a {self.me.role} right now")
             self.task = free[0]
 
+    def template(self) -> list[str]:
+        """The agent command. A project this machine did not create never chooses it: its policy's runner is ignored
+        and the workspace's own runner is used (spec/PROTOCOL.md, section 10)."""
+        from .workspace import Workspace
+        ws = Workspace()
+        hit = ws.entry_for(self.store.home)
+        if hit and not hit[1].get("trusted"):
+            template = ws.runner()
+            if not template:
+                raise PermissionError("this project was fetched from elsewhere, so its policy cannot choose what runs "
+                                      "here: set your own agent with `baton workspace runner -- <command ...>`")
+            return template
+        template = self.store.policy().runner_for(self.me.role) or ws.runner()
+        if not template:
+            raise ValueError("no agent command: set [runner] cmd in the policy or `baton workspace runner`")
+        return template
+
     def uses_stdin(self) -> bool:
         """A template with no {prompt} slot gets the prompt on stdin (safer with variadic flags)."""
-        return not any("{prompt}" in part for part in self.store.policy().runner_for(self.me.role))
+        return not any("{prompt}" in part for part in self.template())
 
     def command(self) -> list[str]:
-        template = self.store.policy().runner_for(self.me.role)
-        if not template:
-            raise ValueError("the policy has no [runner] cmd")
-        return render(template, {"model": self.me.model, "effort": self.me.effort,
+        return render(self.template(), {"model": self.me.model, "effort": self.me.effort,
                                  "prompt": prompt_for(self.task, self.me), "task": self.task.id, "actor": self.actor})
 
     def take(self) -> str:
