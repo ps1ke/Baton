@@ -112,6 +112,15 @@ button.chip.on { border-color: var(--accent); color: var(--accent); }
 .wt .who { font: 11px var(--mono); color: var(--muted); margin-left: 4px; }
 .checks { display: inline-flex; gap: 4px; margin-left: 4px; }
 nav.top { display: flex; gap: 12px; }
+.start { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr)); gap: 16px; margin-bottom: 22px; }
+.start section { display: grid; gap: 10px; align-content: start; }
+.start .stepn { font: 600 11px var(--mono); color: var(--accent); letter-spacing: .08em; text-transform: uppercase; }
+.start .done-step { color: var(--ok); }
+.start label { display: grid; gap: 4px; font-size: 12px; color: var(--muted); }
+.start h3 { margin: 0; font-size: 16px; }
+.logbox { font: 11.5px/1.5 var(--mono); background: var(--soft); border-radius: 6px; padding: 8px 10px; max-height: 220px;
+  overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; margin: 8px 0 0; }
+.invite { font: 12px var(--mono); background: var(--soft); border-radius: 6px; padding: 8px 10px; overflow-wrap: anywhere; margin-top: 8px; }
 .proposal { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; margin-bottom: 10px; }
 .proposal .head { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
 .proposal .head .what { font-weight: 600; overflow-wrap: anywhere; }
@@ -181,6 +190,7 @@ dialog label { display: grid; gap: 4px; font-size: 12px; color: var(--muted); }
         <div class="form" style="grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr))">
           <label>Machine name (shown to projects)<input id="m-name" autocomplete="off"></label>
           <label>Packages at once (slots)<input id="m-slots" type="number" min="0" max="64"></label>
+          <label>Address other machines reach this one at<input id="m-addr" placeholder="203.0.113.7 or my-pc.example.org" autocomplete="off"></label>
           <label style="display:flex; gap:6px; align-items:center"><input type="checkbox" id="m-share"> share hardware details</label>
         </div>
         <table class="mtable" style="margin-top:12px"><thead><tr><th>use</th><th>model</th><th>tier</th><th>plan</th></tr></thead>
@@ -200,6 +210,42 @@ dialog label { display: grid; gap: 4px; font-size: 12px; color: var(--muted); }
 
 <div class="wrap" id="view-home" hidden>
   <div id="home-banner"></div>
+  <div class="start" id="start">
+    <section>
+      <div class="stepn" id="st1">Step 1 · you</div>
+      <h3>Your name</h3>
+      <div class="note">Shown to the projects you start or join, and signed with a key that stays on this machine.</div>
+      <label>Name<input id="me-name" autocomplete="nickname" placeholder="ana"></label>
+      <div class="btns"><button class="primary" id="me-save">Save</button></div>
+      <div id="me-msg"></div>
+    </section>
+    <section>
+      <div class="stepn" id="st2">Step 2 · this machine</div>
+      <h3>What this machine offers</h3>
+      <div class="note" id="mach-sum">Choose the subscriptions and models baton may use here, and how much it may run at once.</div>
+      <div class="btns"><button id="go-machine">Set up this machine</button></div>
+    </section>
+    <section>
+      <div class="stepn">Step 3 · a project</div>
+      <h3>Start a project from a repository</h3>
+      <label>Repository URL<input id="np-repo" placeholder="https://github.com/you/project.git"></label>
+      <label>Name (optional)<input id="np-name"></label>
+      <label>One line about it (optional)<input id="np-sum" maxlength="280"></label>
+      <label>Who can join<select id="np-join"><option value="apply">machines apply, you admit them</option><option value="open">any machine may join</option><option value="closed">nobody new</option></select></label>
+      <div class="note">You become its author. This machine becomes a steward: it plans the top level and is the only kind of machine that pushes to the repository.</div>
+      <div class="btns"><button class="primary" id="np-go">Start the project</button></div>
+      <div id="np-msg"></div>
+    </section>
+    <section>
+      <div class="stepn">or · help someone</div>
+      <h3>Join with an invite</h3>
+      <label>Invite link<input id="cn-link" placeholder="baton://host:port/…?cert=…&token=…"></label>
+      <label>Note to the project (optional)<input id="cn-note" maxlength="2000"></label>
+      <div class="note">This machine applies with what it offers. Once admitted, start it from the project's page and the network gives it work.</div>
+      <div class="btns"><button class="primary" id="cn-go">Join</button></div>
+      <div id="cn-msg"></div>
+    </section>
+  </div>
   <div class="toolbar">
     <input type="search" id="q" placeholder="Search projects, skills, tags…" aria-label="Search projects">
     <select id="f-join" aria-label="Filter by how projects take members">
@@ -239,6 +285,8 @@ dialog label { display: grid; gap: 4px; font-size: 12px; color: var(--muted); }
       <section><h2>Proposals <span class="n" id="n-proposals">0</span></h2><div id="proposals"></div></section>
     </div>
     <div class="stack">
+      <section><h2>This machine</h2><div id="runbox"></div></section>
+      <section id="tools-sec"><h2>Level 0</h2><div id="tools"></div></section>
       <section><h2>Leases held now <span class="n" id="n-leases">0</span></h2><div id="leases"></div></section>
       <section><h2>Machines <span class="n" id="n-actors">0</span></h2><div id="tree"></div></section>
       <section><h2>Work tree</h2><div class="note" id="net-rules"></div><div class="wt" id="worktree"></div></section>
@@ -268,6 +316,14 @@ dialog label { display: grid; gap: 4px; font-size: 12px; color: var(--muted); }
 <script>
 "use strict";
 const token = new URLSearchParams(location.hash.slice(1)).get("token") || "";
+let appInfo = null;
+async function startSession() {   // trade the printed link's token for a cookie, then drop it from the address bar
+  if (token) {
+    try { await fetch("/api/session", {method: "POST", headers: {"X-Baton-Token": token}}); } catch (e) {}
+    history.replaceState(null, "", location.pathname + location.search);
+  }
+  try { appInfo = await (await fetch("/api/app", {cache: "no-store"})).json(); } catch (e) { appInfo = null; }
+}
 let dir = null, state = null, lastDir = "", lastState = "", busy = false, helpFor = null, timer = null;
 const tagFilter = new Set();
 const drafts = {}, openThreads = new Set();
@@ -311,7 +367,9 @@ function extLink(u, text) {
   return ok ? el("a", {href: ok, target: "_blank", rel: "noopener noreferrer nofollow"}, text || ok) : null;
 }
 async function post(path, body) {
-  const r = await fetch(path, {method: "POST", headers: {"Content-Type": "application/json", "X-Baton-Token": token}, body: JSON.stringify(body)});
+  const headers = {"Content-Type": "application/json"};
+  if (token) headers["X-Baton-Token"] = token;
+  const r = await fetch(path, {method: "POST", headers, body: JSON.stringify(body)});
   let out = {}; try { out = await r.json(); } catch (e) {}
   if (!r.ok) throw new Error(out.error || ("HTTP " + r.status));
   return out;
@@ -325,7 +383,7 @@ function joinPill(mode) {
   return mode === "open" ? pill("open", "open to join") : mode === "closed" ? pill("closed", "closed") : pill("apply", "joins by application");
 }
 const setLive = (ok) => el("span", {class: "live" + (ok ? "" : " stale")}, el("i"), el("span", {}, ok ? "live" : "offline"));
-const meText = (me) => me ? "acting as " + me : "read-only";
+const meText = (me) => me ? "you are " + me.replace("human:", "") : (appInfo && appInfo.session ? "say who you are below" : "read-only");
 
 // ---- routing ------------------------------------------------------------------------------------------------------
 const current = () => new URLSearchParams(location.search).get("p");
@@ -388,6 +446,7 @@ function renderMachine() {
   $("m-name").value = cfg.name || "";
   $("m-slots").value = cfg.slots ?? ""; $("m-slots").placeholder = m.suggested_slots + " suggested";
   $("m-share").checked = cfg.share_hardware !== false;
+  if (appInfo && document.activeElement !== $("m-addr")) $("m-addr").value = appInfo.address || "";
   $("m-models").replaceChildren(...m.models.map(x => el("tr", {},
     el("td", {}, el("input", {type: "checkbox", "data-ref": x.ref, checked: x.allowed, disabled: !x.usable && !x.allowed,
       "aria-label": "use " + x.ref})),
@@ -406,7 +465,8 @@ $("m-save").addEventListener("click", async () => {
   }
   try {
     machine = await post("/api/machine", {allowed, tiers, slots: $("m-slots").value === "" ? null : +$("m-slots").value,
-      name: $("m-name").value.trim(), share_hardware: $("m-share").checked});
+      name: $("m-name").value.trim(), share_hardware: $("m-share").checked, address: $("m-addr").value.trim()});
+    await startSession();
     renderMachine(); msg.replaceChildren(el("div", {class: "okmsg"}, "Saved. A running swarm announces the new offer on its next pass."));
   } catch (e) { msg.replaceChildren(el("div", {class: "err"}, e.message)); }
 });
@@ -455,10 +515,19 @@ function matches(e, q) {
     ...(m.needs || []).flatMap(n => [n.tier, n.kind, ...(n.skills || []), ...(n.hardware || [])])].filter(Boolean).join(" ").toLowerCase();
   return q.split(/\s+/).every(w => hay.includes(w));
 }
+function renderStart() {
+  const a = appInfo || {};
+  $("start").hidden = false;
+  if (a.me) { $("me-name").value = a.me.replace("human:", ""); $("st1").textContent = "Step 1 · you · done"; $("st1").className = "stepn done-step"; }
+  if (a.allowed) { $("mach-sum").textContent = a.allowed + " model(s) allowed on " + a.machine + "." + (a.address ? " Reachable at " + a.address + "." : " No address set yet: others cannot reach it."); $("st2").textContent = "Step 2 · this machine · done"; $("st2").className = "stepn done-step"; }
+  const inv = new URLSearchParams(location.search).get("invite");
+  if (inv && !$("cn-link").value) $("cn-link").value = inv;
+}
 function renderDir() {
+  renderStart();
   $("crumb").replaceChildren(el("span", {}, "Projects"));
   $("stats").replaceChildren(el("span", {}, el("b", {}, dir.projects.length), " projects"), el("span", {}, meText(dir.me)), setLive(true));
-  $("home-banner").replaceChildren(...(dir.me ? [] : [el("div", {class: "banner"}, "Read-only. Start it with `baton ui --actor human:<you>` to apply, admit and approve.")]));
+  if (appInfo && appInfo.session) $("home-banner").replaceChildren();
   const tags = [...new Set(dir.projects.flatMap(p => (p.manifest && p.manifest.tags) || []))].sort();
   $("tags").replaceChildren(...tags.map(t => el("button", {class: "chip" + (tagFilter.has(t) ? " on" : ""), "aria-pressed": tagFilter.has(t) ? "true" : "false",
     onclick: () => { tagFilter.has(t) ? tagFilter.delete(t) : tagFilter.add(t); renderDir(); }}, "#" + t)));
@@ -467,7 +536,7 @@ function renderDir() {
     && (!mine || e.local) && [...tagFilter].every(t => (e.manifest.tags || []).includes(t)));
   $("n-projects").textContent = shown.length;
   fill("projects", shown.map(projectCard), dir.projects.length ? "No project matches." :
-    "No projects yet. Create one with `baton project create --name …`, or follow a catalog below.");
+    "No projects yet. Start one from a repository above, or join one with an invite link.");
   $("n-cats").textContent = dir.catalogs.length;
   fill("cats", dir.catalogs.map(c => el("div", {class: "row", style: "padding:4px 0"},
     el("span", {class: "mono", style: "overflow-wrap:anywhere;flex:1"}, c),
@@ -482,6 +551,24 @@ async function catalog(action, source) {
   catch (e) { msg.replaceChildren(el("div", {class: "err"}, e.message)); }
 }
 $("cat-add").addEventListener("click", () => catalog("add", $("cat-src").value.trim()));
+async function startAction(btn, box, fn) {
+  btn.disabled = true; box.replaceChildren(el("div", {class: "note"}, "Working…"));
+  try { await fn(); } catch (e) { box.replaceChildren(el("div", {class: "err"}, e.message)); }
+  btn.disabled = false;
+}
+$("me-save").addEventListener("click", () => startAction($("me-save"), $("me-msg"), async () => {
+  await post("/api/me", {name: $("me-name").value}); await startSession(); $("me-msg").replaceChildren(el("div", {class: "okmsg"}, "Saved.")); renderStart();
+}));
+$("go-machine").addEventListener("click", goMachine);
+$("np-go").addEventListener("click", () => startAction($("np-go"), $("np-msg"), async () => {
+  const out = await post("/api/project/create", {repo: $("np-repo").value, name: $("np-name").value, summary: $("np-sum").value, join: $("np-join").value});
+  await refreshDir(true); go(out.key);
+}));
+$("cn-go").addEventListener("click", () => startAction($("cn-go"), $("cn-msg"), async () => {
+  const out = await post("/api/connect", {invite: $("cn-link").value, note: $("cn-note").value});
+  $("cn-msg").replaceChildren(el("div", {class: "okmsg"}, out.status === "applied" ? "Applied to " + out.name + ". Start this machine on its page; it waits until a steward admits it." : "You are in " + out.name + "."));
+  await refreshDir(true); go(out.key);
+}));
 for (const id of ["q", "f-join", "f-mine"]) $(id).addEventListener("input", () => renderDir());
 
 // ---- help (apply) -------------------------------------------------------------------------------------------------
@@ -628,7 +715,7 @@ function taskCard(t, byId) {
 function projectHead() {
   const s = state, m = s.manifest, known = knownProjects();
   if (!m) return [el("div", {}, el("h2", {class: "big"}, "Private log"),
-    el("div", {class: "note"}, "This log has no project yet, so it is not listed anywhere. Create one with `baton project create --name …`."),
+    el("div", {class: "note"}, "This log has no project yet, so it is not listed anywhere. Start projects from the Projects page."),
     el("div", {class: "note mono"}, s.home))];
   const err = el("div", {class: "err"});
   const rel = el("select", {}, ["depends-on", "dependency-of", "related", "fork-of", "upstream", "downstream", "successor", "predecessor"]
@@ -656,6 +743,52 @@ function projectHead() {
     el("div", {class: "btns", style: "align-content:start"},
       m.join !== "closed" ? el("button", {class: "primary", disabled: !s.me, title: s.me ? "" : "read-only", onclick: () => openHelp(self)}, "Help") : null)];
 }
+function runBox() {
+  const s = state, r = s.run;
+  if (!r) return [el("div", {class: "empty"}, "A private log: run it from a terminal.")];
+  const err = el("div", {class: "err"});
+  const toggle = (action) => act("/api/p/" + encodeURIComponent(current()) + "/run", {action, max_runs: 20}, err);
+  return [el("div", {class: "row"}, el("span", {class: "dot" + (r.running ? " on" : "")}),
+      el("b", {}, s.machine), el("span", {class: "note"}, r.running ? "working for this project · peer port " + r.port : "not working for this project"),
+      el("span", {style: "margin-left:auto"}, r.running ? el("button", {class: "danger", onclick: () => toggle("stop")}, "Stop")
+        : el("button", {class: "primary", onclick: () => toggle("start")}, "Start this machine"))),
+    el("div", {class: "note", style: "margin-top:6px"}, "While it runs, the network gives this machine work, and it syncs with the other machines directly. It stops after 20 agent runs; start it again for more."),
+    r.log.length ? el("pre", {class: "logbox"}, r.log.join("\n")) : null, err];
+}
+let inviteUrl = "";
+function toolsBox() {
+  const s = state, err = el("div", {class: "err"}), key = encodeURIComponent(current());
+  const title = draft("pk-title", {placeholder: "What should be done?", maxlength: 200});
+  const goal = draft("pk-goal", {placeholder: "What done looks like"});
+  const paths = draft("pk-paths", {placeholder: "src/importer docs"});
+  const checks = draft("pk-checks", {placeholder: "python3 -m unittest"});
+  const size = el("select", {"aria-label": "size"}, ["S", "M", "L", "XL"].map(x => el("option", {value: x, selected: x === "L"}, x)));
+  const members = s.members.filter(m => m.right !== "author");
+  return [
+    el("h3", {style: "margin:0 0 6px;font-size:14px"}, "Post work"),
+    el("div", {class: "form", style: "margin-top:0"}, el("label", {}, "Title", title), el("label", {}, "Goal", goal),
+      el("label", {}, "Paths it may change", paths), el("label", {}, "Check command", checks), el("label", {}, "Size", size)),
+    el("div", {class: "note", style: "margin-top:4px"}, "L and XL are planned and split by a steward first; S and M go straight to a builder."),
+    el("div", {class: "btns", style: "margin-top:8px"}, el("button", {class: "primary", onclick: () => {
+      if (!title.value.trim()) { err.textContent = "Give the work a title."; return; }
+      ["pk-title", "pk-goal", "pk-paths", "pk-checks"].forEach(k => delete drafts[k]);
+      act("/api/p/" + key + "/task", {title: title.value, goal: goal.value, paths: paths.value, checks: checks.value, size: size.value}, err);
+    }}, "Post")),
+    el("h3", {style: "margin:16px 0 6px;font-size:14px"}, "Invite a machine"),
+    el("div", {class: "note"}, "Send the link to someone; they paste it into their baton. Your machine must be running for them to connect."),
+    el("div", {class: "btns", style: "margin-top:6px"}, el("button", {onclick: async () => {
+      try { inviteUrl = (await post("/api/p/" + key + "/invite", {})).url; renderProject(); } catch (e) { err.textContent = e.message; }
+    }}, "Make an invite link")),
+    inviteUrl ? el("div", {class: "invite"}, inviteUrl) : null,
+    inviteUrl ? el("div", {class: "note"}, "Or send the web version: https://ps1ke.github.io/Baton/join.html#" + encodeURIComponent(inviteUrl)) : null,
+    s.me_author && members.length ? el("h3", {style: "margin:16px 0 6px;font-size:14px"}, "Machines") : null,
+    s.me_author ? members.map(m => el("div", {class: "row", style: "padding:3px 0"}, el("span", {class: "mono"}, m.name),
+      m.right === "steward" ? pill("done", "level 0") : null, m.revoked ? pill("failed", "removed") : null,
+      el("span", {style: "margin-left:auto"}),
+      m.right !== "steward" && !m.revoked ? el("button", {onclick: () => act("/api/p/" + key + "/grant", {to: m.name}, err)}, "Make steward") : null,
+      !m.revoked ? el("button", {class: "danger", onclick: () => { act("/api/p/" + key + "/revoke", {actor: m.name}, err); }}, "Remove") : null)) : null,
+    err];
+}
 function renderProject() {
   const s = state, m = s.manifest;
   $("crumb").replaceChildren(el("button", {class: "link", onclick: () => go(null)}, "Projects"), " / ", el("b", {}, m ? m.name : "private log"));
@@ -666,11 +799,14 @@ function renderProject() {
     s.sync ? el("span", {title: s.sync.error || "", class: s.sync.pulled ? "" : "err"}, s.sync.pulled ? "synced " + ago(s.sync.at, s.now) + " ago" + (s.sync.ok ? "" : " (pull only)") : "sync failing") : null,
     el("span", {}, meText(s.me)), setLive(true)].filter(Boolean));
   const banners = [];
-  if (s.me && !s.me_here) banners.push(el("div", {class: "banner"}, s.me + " is not a human of this project (" + (s.humans.join(", ") || "none") + "): you can watch and apply here, not decide."));
-  if (!s.me) banners.push(el("div", {class: "banner"}, "Read-only. Start it with `baton ui --actor human:<you>` to decide."));
+  if (s.me && !s.me_here) banners.push(el("div", {class: "banner"}, "You can watch this project and run your machine for it; its decisions are made by its author and stewards (" + (s.humans.join(", ") || "none present") + ")."));
+  if (!s.me) banners.push(el("div", {class: "banner"}, "Say who you are on the Projects page to act here."));
   if (s.held || s.bad) banners.push(el("div", {class: "banner"}, s.held + " event(s) waiting for their parents, " + s.bad + " bad file(s) in the log."));
   $("p-banner").replaceChildren(...banners);
   $("p-head").replaceChildren(...projectHead());
+  $("runbox").replaceChildren(...runBox());
+  $("tools-sec").hidden = !s.me_here;
+  if (s.me_here) $("tools").replaceChildren(...toolsBox().filter(Boolean).flat());
   const pendingApps = s.applications.filter(a => a.status === "pending"), pending = s.proposals.filter(p => p.status === "pending");
   const byId = Object.fromEntries(s.tasks.map(t => [t.id, t]));
   const asks = s.messages.filter(m => s.inbox.includes(m.id));
@@ -718,7 +854,10 @@ function renderProject() {
   fill("feed", s.feed.map(f => el("div", {}, el("span", {class: "when"}, ago(f.ts, s.now)),
     el("span", {class: "clamp", title: f.text}, el("span", {class: "who"}, f.actor), f.text), f.result === "ok" ? el("span") : pill(f.result))), "No events yet.");
 }
-route();
+startSession().then(() => {
+  if (appInfo && !appInfo.session) $("home-banner").replaceChildren(el("div", {class: "banner"}, "This page is read-only: open baton from this machine by running `baton` in a terminal."));
+  route();
+});
 </script>
 </body>
 </html>

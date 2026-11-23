@@ -84,11 +84,11 @@ class MemberTests(Base):
 class LeaseTests(Base):
     def test_overlap_is_denied_and_expiry_frees_the_path(self):
         first = self.a.append("claim", "w1", {"task": "fix cmake", "paths": ["build/CMakeLists.txt"], "ttl": 60}, T0 + 10)
-        second = self.a.append("claim", "w2", {"task": "also cmake", "paths": ["runtime"]}, T0 + 20)
+        second = self.a.append("claim", "w2", {"task": "also cmake", "paths": ["build"]}, T0 + 20)
         s = self.a.state()
         self.assertIn(first.id, s.leases)
         self.assertIn("held by w1", s.denied[second.id])
-        third = self.a.append("claim", "w2", {"task": "later", "paths": ["runtime"]}, T0 + 71)
+        third = self.a.append("claim", "w2", {"task": "later", "paths": ["build"]}, T0 + 71)
         self.assertIn(third.id, self.a.state().leases)
 
     def test_topics_collide_too(self):
@@ -226,7 +226,7 @@ class ForgeTests(unittest.TestCase):
     def test_touching_finds_overlapping_pull_requests(self):
         pulls = [{"number": 1, "title": "a", "files": [{"path": "build/CMakeLists.txt"}], "author": {"login": "x"}},
                  {"number": 2, "title": "b", "files": [{"path": "docs/x.md"}], "author": {"login": "y"}}]
-        self.assertEqual([p["number"] for p in forge.touching(pulls, ["runtime"])], [1])
+        self.assertEqual([p["number"] for p in forge.touching(pulls, ["build"])], [1])
 
     def test_execute_sends_the_body_on_stdin(self):
         seen = {}

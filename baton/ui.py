@@ -13,7 +13,9 @@ text from logs and catalogs is untrusted and the page only ever inserts it as te
 from __future__ import annotations
 
 import hashlib
+import hmac
 import http.server
+import os
 import json
 import re
 import secrets
@@ -316,11 +318,29 @@ class Directory:
         raise KeyError("unknown project")
 
 
+def ui_secret(ws: Workspace) -> str:
+    """The app's session secret, kept in the workspace so a bookmarked baton keeps working across restarts."""
+    f = ws.dir / "ui-secret"
+    if not f.exists():
+        ws.dir.mkdir(parents=True, exist_ok=True)
+        fd = os.open(f, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w") as out:
+            out.write(secrets.token_urlsafe(24))
+    return f.read_text().strip()
+
+
 def make_server(ws: Workspace, actor: str | None, host: str = "127.0.0.1", port: int = 8765,
-                extra_home: Path | None = None):
-    token = secrets.token_urlsafe(24)
+                extra_home: Path | None = None, token: str | None = None):
+    from . import app
+    token = token or secrets.token_urlsafe(24)
+    cookie = hmac.new(token.encode(), b"baton-session", hashlib.sha256).hexdigest()
     directory = Directory(ws, extra_home)
-    route = re.compile(r"^/api/p/([\w-]{1,80})/(state|decide|link|message)$")
+    runs = app.Runs(ws)
+    route = re.compile(r"^/api/p/([\w-]{1,80})/(state|decide|link|message|task|invite|grant|revoke|run)$")
+    fixed_actor = actor
+
+    def who():
+        return fixed_actor or app.me(ws)
 
     class Handler(http.server.BaseHTTPRequestHandler):
         server_version = "baton"
@@ -346,8 +366,26 @@ def make_server(ws: Workspace, actor: str | None, host: str = "127.0.0.1", port:
             self.end_headers()
             self.wfile.write(body)
 
-        def _json(self, code: int, obj):
-            self._send(code, json.dumps(obj).encode("utf-8"))
+        def _json(self, code: int, obj, headers=()):
+            body = json.dumps(obj).encode("utf-8")
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            for k, v in headers:
+                self.send_header(k, v)
+            self.end_headers()
+            self.wfile.write(body)
+
+        def _session(self) -> bool:
+            if secrets.compare_digest(self.headers.get("X-Baton-Token", ""), token):
+                return True
+            for part in (self.headers.get("Cookie") or "").split(";"):
+                k, _, v = part.strip().partition("=")
+                if k == "baton_session" and secrets.compare_digest(v, cookie):
+                    return True
+            return False
 
         def _body(self) -> dict:
             n = int(self.headers.get("Content-Length", "0"))
@@ -367,9 +405,17 @@ def make_server(ws: Workspace, actor: str | None, host: str = "127.0.0.1", port:
             if path == "/api/machine":
                 return self._json(200, machine_view(ws, fresh="fresh" in (urlparse(self.path).query or ""),
                                                     limits="limits" in (urlparse(self.path).query or "")))
+            if path == "/api/app":
+                cfg = ws.machine()
+                return self._json(200, {"me": who(), "session": self._session(), "machine": cfg["name"],
+                                        "allowed": len(cfg.get("allowed", [])), "address": ws.load().get("address", ""),
+                                        "projects": len(ws.projects()), "version": __import__("baton").__version__})
             if path == "/api/projects":
                 entries, problems = directory.entries(fresh="fresh" in (urlparse(self.path).query or ""))
-                return self._json(200, {"me": actor, "projects": entries, "problems": problems,
+                for e in entries:
+                    if e.get("manifest"):
+                        e["running"] = runs.running(e["manifest"]["id"])
+                return self._json(200, {"me": who(), "projects": entries, "problems": problems,
                                         "catalogs": ws.load()["catalogs"], "now": time.time()})
             m = route.match(path)
             if m and m.group(2) == "state":
@@ -377,27 +423,51 @@ def make_server(ws: Workspace, actor: str | None, host: str = "127.0.0.1", port:
                     store = directory.store(m.group(1))
                 except KeyError as err:
                     return self._json(404, {"error": str(err)})
+                actor = who()
                 snap = snapshot(store, me=actor)
+                st = store.state()
+                a = st.actors.get(actor) if actor else None
                 snap["me"] = actor
-                snap["me_here"] = bool(actor) and actor in snap["humans"]
+                snap["me_here"] = bool(a and a.level0)
+                snap["me_author"] = bool(a and a.right == "author")
+                snap["machine"] = ws.machine()["name"]
+                if st.project_id:
+                    snap["run"] = runs.status(st.project_id)
                 return self._json(200, snap)
             self._json(404, {"error": "not found"})
 
         def do_POST(self):
             if not self._host_ok():
                 return self._json(403, {"error": "wrong host"})
-            if not secrets.compare_digest(self.headers.get("X-Baton-Token", ""), token):
-                return self._json(403, {"error": "missing or wrong session token: open the URL baton printed"})
             path = urlparse(self.path).path
-            if path == "/api/machine":   # this machine's own settings: not an act in any project
-                try:
-                    return self._json(200, set_machine(ws, self._body()))
-                except (KeyError, ValueError, TypeError) as err:
-                    return self._json(400, {"error": str(err)})
-            if not actor:
-                return self._json(403, {"error": "read-only: start `baton ui --actor human:<you>` to act"})
+            if path == "/api/session":   # the printed link's token, exchanged for a cookie
+                if not secrets.compare_digest(self.headers.get("X-Baton-Token", ""), token):
+                    return self._json(403, {"error": "wrong token"})
+                return self._json(200, {"ok": True}, [("Set-Cookie", f"baton_session={cookie}; HttpOnly; SameSite=Strict; "
+                                                                     "Path=/; Max-Age=31536000")])
+            if not self._session():
+                return self._json(403, {"error": "open baton from this machine: run `baton` in a terminal"})
             try:
                 req = self._body()
+                if path == "/api/machine":   # this machine's own settings: not an act in any project
+                    if "address" in req:
+                        app.set_address(ws, str(req.pop("address") or ""))
+                    return self._json(200, set_machine(ws, req) if req else machine_view(ws))
+                if path == "/api/me":
+                    return self._json(200, {"me": app.set_me(ws, str(req.get("name", "")))})
+                if path == "/api/connect":
+                    out = app.connect(ws, str(req.get("invite", "")), str(req.get("note", "")))
+                    directory.entries(fresh=True)
+                    return self._json(200, {**out, "key": out["project"]})
+                actor = who()
+                if not actor:
+                    return self._json(403, {"error": "say who you are first"})
+                if path == "/api/project/create":
+                    pid = app.create_project(ws, actor, str(req.get("repo", "")), str(req.get("name", "")),
+                                             str(req.get("summary", "")), str(req.get("join") or "apply"),
+                                             bool(req.get("steward_here", True)))
+                    directory.entries(fresh=True)
+                    return self._json(200, {"project": pid, "key": pid})
                 if path == "/api/catalogs":
                     source = str(req.get("source", "")).strip()
                     if not source:
@@ -419,25 +489,54 @@ def make_server(ws: Workspace, actor: str | None, host: str = "127.0.0.1", port:
                 if not m or m.group(2) == "state":
                     return self._json(404, {"error": "not found"})
                 store = directory.store(m.group(1))
-                if actor not in store.policy().humans:
-                    return self._json(403, {"error": f"{actor} is not a human of this project, so it cannot decide here"})
-                out = {"decide": decide, "link": add_link, "message": say}[m.group(2)](store, actor, req)
+                st = store.state()
+                op = m.group(2)
+                if op == "run":   # this machine's own work: no project right needed beyond membership
+                    if not st.project_id:
+                        raise ValueError("only a project can run here")
+                    out = runs.start(st.project_id, store.home, int(req.get("max_runs") or 20)) \
+                        if req.get("action") == "start" else runs.stop(st.project_id)
+                    return self._json(200, out)
+                a = st.actors.get(actor)
+                private_human = st.mode == "private" and actor in store.policy().humans
+                if not (a and a.level0) and not private_human:
+                    return self._json(403, {"error": f"{actor} is not level 0 (author or steward) of this project"})
+                if op == "task":
+                    out = {"id": app.post_package(ws, store, actor, req)}
+                elif op == "invite":
+                    out = {"url": app.make_invite(ws, store, actor)}
+                elif op == "grant":
+                    app.grant(store, actor, str(req["to"]), str(req.get("right") or "steward"))
+                    out = {"ok": True}
+                elif op == "revoke":
+                    app.revoke(store, actor, str(req["actor"]))
+                    out = {"ok": True}
+                else:
+                    out = {"decide": decide, "link": add_link, "message": say}[op](store, actor, req)
                 directory.entries(fresh=True)
                 return self._json(200, out)
-            except (KeyError, ValueError, TypeError, RuntimeError, NotImplementedError, OSError) as err:
+            except (KeyError, ValueError, TypeError, RuntimeError, NotImplementedError, OSError, PermissionError) as err:
                 return self._json(400, {"error": str(err)})
 
     srv = http.server.ThreadingHTTPServer((host, port), Handler)
     srv.daemon_threads = True
     srv.directory = directory
+    srv.runs = runs
     return srv, token
 
 
 def serve(ws: Workspace, actor: str | None, port: int = 8765, open_browser: bool = True, extra_home: Path | None = None,
           sync_every: float | None = None):
-    srv, token = make_server(ws, actor, port=port, extra_home=extra_home)
+    try:
+        srv, token = make_server(ws, actor, port=port, extra_home=extra_home, token=ui_secret(ws))
+    except OSError:   # already running: just open it
+        url = f"http://127.0.0.1:{port}/#token={ui_secret(ws)}"
+        print(f"baton is already running: {url}", flush=True)
+        if open_browser:
+            webbrowser.open(url)
+        return
     url = f"http://127.0.0.1:{srv.server_address[1]}/#token={token}"
-    print(f"baton ui on {url}" + ("" if actor else "  (read-only: no --actor)"), flush=True)
+    print(f"baton is running at {url}\n(keep this terminal open; Ctrl-C stops it)", flush=True)
     syncer = None
     if sync_every:
         directory = srv.directory
@@ -456,4 +555,5 @@ def serve(ws: Workspace, actor: str | None, port: int = 8765, open_browser: bool
     finally:
         if syncer:
             syncer.stop()
+        srv.runs.stop_all()
         srv.server_close()

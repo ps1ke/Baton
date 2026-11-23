@@ -703,6 +703,16 @@ def cmd_thread(a):
     return 0
 
 
+def cmd_update(a):
+    import subprocess
+    import tempfile
+    import urllib.request
+    url = "https://ps1ke.github.io/Baton/install.sh"
+    with tempfile.NamedTemporaryFile("wb", suffix=".sh", delete=False) as f:
+        f.write(urllib.request.urlopen(url, timeout=30).read())
+    return subprocess.call(["sh", f.name], env={**os.environ, "BATON_REF": a.ref})
+
+
 def cmd_ui(a):
     from . import ui
     ui.serve(_ws(), a.actor or os.environ.get("BATON_ACTOR"), port=a.port, open_browser=not a.no_open,
@@ -894,7 +904,9 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="baton", description=__doc__.split("\n\n")[0])
     ap.add_argument("--home", default=os.environ.get("BATON_HOME", ".baton"), help="the log folder (BATON_HOME)")
     ap.add_argument("--actor", help="who acts (BATON_ACTOR; default: this machine's member name)")
-    sub = ap.add_subparsers(dest="cmd", required=True)
+    from . import __version__
+    ap.add_argument("--version", action="version", version=__version__)
+    sub = ap.add_subparsers(dest="cmd")
     sub.add_parser("init").set_defaults(fn=cmd_init)
 
     p = sub.add_parser("machine", help="this machine: hardware, agents, models; choose what it offers")
@@ -1022,6 +1034,11 @@ def main(argv=None) -> int:
     p = sub.add_parser("sync", help="exchange events with the log's git remote (once, or --every 15s)")
     p.add_argument("--remote", default="origin"); p.add_argument("--branch", help="default: the current branch")
     p.add_argument("--every", help="keep syncing at this interval, e.g. 15s"); p.set_defaults(fn=cmd_sync)
+    p = sub.add_parser("update", help="install the latest baton (runs the installer again)")
+    p.add_argument("--ref", default="main"); p.set_defaults(fn=cmd_update)
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if not any(x in sub.choices for x in argv) and not any(x in ("-h", "--help", "--version") for x in argv):
+        argv.append("ui")   # plain `baton`: open the app in the browser
     a = ap.parse_args(argv)
     try:
         return a.fn(a)

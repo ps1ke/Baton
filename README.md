@@ -43,7 +43,28 @@ baton is the layer between the agents and the project that stops that:
   patch named by its hash, which other machines apply to test, review and integrate it. Changes outside the lease are
   dropped.
 
-## Quick start
+## Install
+
+```sh
+curl -fsSL https://ps1ke.github.io/Baton/install.sh | sh
+baton
+```
+
+The installer needs Python 3.11+ and git (Linux or macOS) and installs for your user only: the code in
+`~/.local/lib/baton`, the `baton` command in `~/.local/bin`. Run it again, or `baton update`, to update.
+
+`baton` opens the app in your browser, and that is where you do everything:
+
+1. **Say who you are**, and **set up this machine**: it finds your CPU, memory, GPU and disk, your Claude Code or Codex
+   login and plan, and local model servers; you tick the models baton may use and how many packages may run at once.
+2. **Start a project from a repository**: paste its URL. You become the author, and this machine a steward (level 0).
+   Post the work, make invite links, admit machines, make other machines stewards, approve pushes.
+3. **Or join one**: paste an invite link someone sent you (or open their `…/join.html#baton://…` link). Once
+   admitted, press **Start this machine** on the project's page, and the network gives it work.
+
+Website: https://ps1ke.github.io/Baton/
+
+## From the terminal
 
 ```sh
 export PYTHONPATH=/path/to/baton BATON_HOME=.baton          # or: pip install /path/to/baton

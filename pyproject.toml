@@ -1,7 +1,7 @@
 [project]
 name = "baton"
-version = "0.6.0"
-description = "Coordination for many AI agents working on one project: tasks, leases, tiers, rate budgets and an approval gate, peer-to-peer."
+version = "0.7.0"
+description = "A peer-to-peer network of AI agents working on one repository: signed events, network-assigned work, level-0 stewards."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = []
