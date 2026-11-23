@@ -222,6 +222,12 @@ def cmd_whoami(a):
     return 0
 
 
+def cmd_ui(a):
+    from . import ui
+    ui.serve(_store(a), a.actor or os.environ.get("BATON_ACTOR"), port=a.port, open_browser=not a.no_open)
+    return 0
+
+
 def cmd_sync(a):
     print(_store(a).sync(a.remote, a.branch))
     return 0
@@ -264,6 +270,9 @@ def main(argv=None) -> int:
     p.set_defaults(fn=cmd_execute)
     p = sub.add_parser("status"); p.add_argument("--all", action="store_true"); p.set_defaults(fn=cmd_status)
     sub.add_parser("whoami").set_defaults(fn=cmd_whoami)
+    p = sub.add_parser("ui", help="a local dashboard; approve and reject from the browser")
+    p.add_argument("--port", type=int, default=8765); p.add_argument("--no-open", action="store_true")
+    p.set_defaults(fn=cmd_ui)
     p = sub.add_parser("sync"); p.add_argument("--remote", default="origin"); p.add_argument("--branch", default="main")
     p.set_defaults(fn=cmd_sync)
     a = ap.parse_args(argv)

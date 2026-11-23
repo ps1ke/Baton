@@ -51,6 +51,18 @@ python3 -m baton --actor human:you approve <id prefix>
 python3 -m baton --actor human:you execute <id prefix> --yes
 ```
 
+## Dashboard
+
+```sh
+python3 -m baton --actor human:you ui        # opens http://127.0.0.1:8765/#token=...
+```
+
+The task board, the leases held now, the agent tree with each tier's model and effort, an activity feed (with what the
+gate refused and why), and the approval queue: read the exact text an agent wants to post, then approve, reject or
+execute it from the browser. It refreshes every two seconds, so it shows synced peers' work too. It listens on
+127.0.0.1 only, every write needs the session token in the printed URL, and without `--actor` (a human from the
+policy) it is read-only.
+
 Sharing between machines: make `$BATON_HOME` a git repository with a common remote (any git remote, including
 another peer over SSH) and run `baton sync` on each machine.
 

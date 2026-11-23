@@ -1,0 +1,275 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>baton</title>
+<style>
+:root {
+  --bg: #f6f7f9; --panel: #ffffff; --ink: #1b1f24; --muted: #5d6673; --line: #e3e6ea; --soft: #eef1f4;
+  --accent: #2f5bd3; --ok: #1f7a4d; --warn: #9a6500; --bad: #b3261e; --info: #6741b8;
+  --ok-bg: #e5f4ec; --warn-bg: #fbf0d9; --bad-bg: #fbe7e5; --info-bg: #eee8fa; --accent-bg: #e7edfb;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0f1215; --panel: #171b20; --ink: #e6e9ed; --muted: #97a0ab; --line: #2a3038; --soft: #1e2329;
+    --accent: #7b9cff; --ok: #5cc791; --warn: #e2b155; --bad: #f08a80; --info: #b89cf5;
+    --ok-bg: #16291f; --warn-bg: #2e2412; --bad-bg: #321a18; --info-bg: #241d36; --accent-bg: #1b2440;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.45 var(--sans); }
+header { position: sticky; top: 0; z-index: 2; display: flex; gap: 16px; align-items: center; flex-wrap: wrap;
+  padding: 12px 20px; background: var(--panel); border-bottom: 1px solid var(--line); }
+header h1 { font-size: 16px; margin: 0; letter-spacing: .02em; }
+header .home { font: 12px var(--mono); color: var(--muted); overflow-wrap: anywhere; }
+.stats { display: flex; gap: 14px; margin-left: auto; flex-wrap: wrap; font-size: 12px; color: var(--muted); }
+.stats b { color: var(--ink); font-variant-numeric: tabular-nums; }
+.live { display: inline-flex; align-items: center; gap: 6px; }
+.live i { width: 8px; height: 8px; border-radius: 50%; background: var(--ok); }
+.live.stale i { background: var(--bad); }
+main { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr); gap: 16px; padding: 16px 20px 40px; }
+@media (max-width: 960px) { main { grid-template-columns: minmax(0, 1fr); padding: 12px 16px 32px; } }
+section { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; min-width: 0; }
+section + section { margin-top: 16px; }
+h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 0 0 10px;
+  display: flex; align-items: center; gap: 8px; }
+h2 .n { background: var(--soft); color: var(--ink); border-radius: 999px; padding: 0 8px; font-size: 12px; }
+.empty { color: var(--muted); font-size: 13px; padding: 6px 0; }
+.board { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+@media (max-width: 640px) { .board { grid-template-columns: minmax(0, 1fr); } }
+.col { background: var(--soft); border-radius: 8px; padding: 8px; min-height: 60px; }
+.col h3 { font-size: 12px; margin: 2px 4px 8px; color: var(--muted); font-weight: 600; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; margin-bottom: 8px; }
+.card .t { font-weight: 600; overflow-wrap: anywhere; }
+.card .m { color: var(--muted); font-size: 12px; margin-top: 4px; overflow-wrap: anywhere; }
+.card.sub { margin-left: 12px; border-left: 3px solid var(--line); }
+.chip { display: inline-block; font: 11px var(--mono); padding: 1px 6px; border-radius: 4px; background: var(--soft);
+  color: var(--muted); margin: 2px 4px 0 0; overflow-wrap: anywhere; }
+.pill { display: inline-block; font-size: 11px; font-weight: 600; padding: 1px 8px; border-radius: 999px; white-space: nowrap; }
+.clamp { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.ok, .done, .approved, .executed { color: var(--ok); background: var(--ok-bg); }
+.pending, .taken, .escalated { color: var(--warn); background: var(--warn-bg); }
+.failed, .denied, .ignored, .rejected, .duplicate, .over_budget, .unleased, .unknown_action { color: var(--bad); background: var(--bad-bg); }
+.open { color: var(--accent); background: var(--accent-bg); }
+.proposal { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; margin-bottom: 10px; }
+.proposal .head { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+.proposal .head .what { font-weight: 600; }
+.proposal pre { white-space: pre-wrap; overflow-wrap: anywhere; background: var(--soft); border-radius: 6px; padding: 8px 10px;
+  font: 12px/1.5 var(--mono); max-height: 220px; overflow: auto; margin: 8px 0; }
+.btns { display: flex; gap: 8px; flex-wrap: wrap; }
+button { font: inherit; font-size: 13px; padding: 5px 12px; border-radius: 6px; border: 1px solid var(--line);
+  background: var(--panel); color: var(--ink); cursor: pointer; }
+button:hover:not(:disabled) { border-color: var(--muted); }
+button:disabled { opacity: .45; cursor: not-allowed; }
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+button.danger { color: var(--bad); }
+.note { font-size: 12px; color: var(--muted); }
+.err { color: var(--bad); font-size: 12px; margin-top: 6px; }
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+td, th { text-align: left; padding: 6px 4px; border-bottom: 1px solid var(--line); vertical-align: top; overflow-wrap: anywhere; }
+th { color: var(--muted); font-weight: 600; font-size: 12px; }
+td.num { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.bar { height: 4px; border-radius: 2px; background: var(--soft); margin-top: 4px; }
+.bar i { display: block; height: 100%; border-radius: 2px; background: var(--accent); }
+.tree ul { list-style: none; margin: 0; padding-left: 16px; border-left: 1px solid var(--line); }
+.tree > ul { padding-left: 0; border: 0; }
+.tree li { padding: 3px 0; }
+.tree .role { font-size: 11px; color: var(--muted); margin-left: 6px; }
+.tree .tier { font: 11px var(--mono); color: var(--info); margin-left: 6px; }
+.feed { max-height: 420px; overflow: auto; }
+.feed div { display: grid; grid-template-columns: 64px minmax(0, 1fr) auto; gap: 8px; padding: 5px 0; border-bottom: 1px solid var(--line); font-size: 13px; }
+.feed .when { color: var(--muted); font: 12px var(--mono); }
+.feed div > .pill { align-self: start; }
+.feed .who { font-weight: 600; margin-right: 4px; }
+.banner { margin: 0 20px; padding: 8px 12px; border-radius: 8px; font-size: 13px; }
+.banner.ro { background: var(--warn-bg); color: var(--warn); margin-top: 12px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>baton</h1>
+  <span class="home" id="home"></span>
+  <div class="stats">
+    <span><b id="s-events">0</b> events</span>
+    <span><b id="s-open">0</b> open</span>
+    <span><b id="s-taken">0</b> running</span>
+    <span><b id="s-leases">0</b> leases</span>
+    <span><b id="s-refused">0</b> refused at the gate</span>
+    <span id="me"></span>
+    <span class="live" id="live"><i></i><span>live</span></span>
+  </div>
+</header>
+<div id="banner"></div>
+<main>
+  <div>
+    <section>
+      <h2>Waiting for approval <span class="n" id="n-pending">0</span></h2>
+      <div id="pending"></div>
+    </section>
+    <section>
+      <h2>Task board <span class="n" id="n-tasks">0</span></h2>
+      <div class="board">
+        <div class="col"><h3>Open</h3><div id="c-open"></div></div>
+        <div class="col"><h3>Running</h3><div id="c-taken"></div></div>
+        <div class="col"><h3>Finished</h3><div id="c-ended"></div></div>
+      </div>
+    </section>
+    <section>
+      <h2>Proposals <span class="n" id="n-proposals">0</span></h2>
+      <div id="proposals"></div>
+    </section>
+  </div>
+  <div>
+    <section>
+      <h2>Leases held now <span class="n" id="n-leases">0</span></h2>
+      <div id="leases"></div>
+    </section>
+    <section>
+      <h2>Agents <span class="n" id="n-actors">0</span></h2>
+      <div class="tree" id="tree"></div>
+    </section>
+    <section>
+      <h2>Activity</h2>
+      <div class="feed" id="feed"></div>
+    </section>
+  </div>
+</main>
+<script>
+"use strict";
+const token = new URLSearchParams(location.hash.slice(1)).get("token") || "";
+let state = null, last = "", busy = false;
+
+function el(tag, attrs, ...kids) {
+  const n = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (v == null || v === false) continue;
+    if (k === "class") n.className = v;
+    else if (k.startsWith("on")) n.addEventListener(k.slice(2), v);
+    else n.setAttribute(k, v === true ? "" : v);
+  }
+  for (const kid of kids.flat()) if (kid != null && kid !== false) n.append(kid.nodeType ? kid : String(kid));
+  return n;
+}
+const pill = (s) => el("span", {class: "pill " + s}, s.replace("_", " "));
+const short = (id) => id ? id.slice(0, 12) : "";
+function ago(ts) {
+  const d = Math.max(0, Math.round(state.now - ts));
+  return d < 60 ? d + "s" : d < 3600 ? Math.round(d / 60) + "m" : d < 86400 ? Math.round(d / 3600) + "h" : Math.round(d / 86400) + "d";
+}
+function left(s) { return s < 60 ? s + "s" : s < 3600 ? Math.round(s / 60) + "m" : (s / 3600).toFixed(1) + "h"; }
+function fill(id, nodes, emptyText) {
+  const box = document.getElementById(id);
+  box.replaceChildren(...(nodes.length ? nodes : [el("div", {class: "empty"}, emptyText)]));
+}
+
+async function decide(id, decision, errBox) {
+  if (busy) return;
+  let reason = "";
+  if (decision === "reject") { reason = prompt("Why reject it? (optional)") ?? null; if (reason === null) return; }
+  if (decision === "execute" && !confirm("Run this action now? It leaves this machine and cannot be undone.")) return;
+  busy = true; errBox.textContent = "";
+  try {
+    const r = await fetch("api/decide", {method: "POST", headers: {"Content-Type": "application/json", "X-Baton-Token": token},
+      body: JSON.stringify({proposal: id, decision, reason})});
+    const out = await r.json();
+    if (!r.ok) errBox.textContent = out.error || ("HTTP " + r.status);
+  } catch (e) { errBox.textContent = String(e); }
+  busy = false; last = ""; refresh();
+}
+
+function proposalCard(p, actions) {
+  const payload = Object.assign({}, p.payload); const body = payload.body; delete payload.body;
+  const err = el("div", {class: "err"});
+  const can = !!state.me && p.actor !== state.me;
+  const why = !state.me ? "read-only" : p.actor === state.me ? "your own proposal" : null;
+  return el("div", {class: "proposal"},
+    el("div", {class: "head"}, pill(p.status), el("span", {class: "what"}, p.action + " → " + (p.target || "-")),
+      el("span", {class: "note"}, "by " + p.actor + " · " + ago(p.ts) + " ago" + (p.decided_by ? " · " + p.status + " by " + p.decided_by : ""))),
+    p.reason ? el("div", {class: "note"}, p.reason) : null,
+    body ? el("pre", {}, body) : null,
+    Object.keys(payload).length ? el("div", {}, Object.entries(payload).map(([k, v]) => el("span", {class: "chip"}, k + ": " + (Array.isArray(v) ? v.join(", ") : v)))) : null,
+    p.result ? el("div", {class: "note"}, "result: " + JSON.stringify(p.result)) : null,
+    actions && actions.length ? el("div", {class: "btns", style: "margin-top:8px"},
+      actions.map(([label, d, cls]) => el("button", {class: cls || "", disabled: !can || (d === "execute" && !state.executors.includes(p.action)),
+        title: why || (d === "execute" && !state.executors.includes(p.action) ? "no executor for " + p.action + " yet" : ""),
+        onclick: () => decide(p.id, d, err)}, label))) : null,
+    err);
+}
+
+function taskCard(t, byId) {
+  const parent = t.parent && byId[t.parent];
+  const lease = t.left != null ? el("div", {class: "m"}, "held by " + t.holder + " · " + left(t.left) + " left") : null;
+  return el("div", {class: "card" + (t.parent ? " sub" : "")},
+    el("div", {class: "t"}, t.title),
+    t.detail ? el("div", {class: "m"}, t.detail) : null,
+    el("div", {}, pill(t.status), t.role ? el("span", {class: "chip"}, "for " + t.role) : null,
+      t.scope.filter(s => !s.startsWith("task:")).map(s => el("span", {class: "chip"}, s || "(whole repo)"))),
+    parent ? el("div", {class: "m"}, "part of “" + parent.title + "”") : null,
+    t.subtasks.length ? el("div", {class: "m"}, t.subtasks.length + " subtask(s)") : null,
+    lease,
+    t.summary ? el("div", {class: "m clamp", title: t.summary}, t.summary) : null,
+    el("div", {class: "m"}, short(t.id) + " · posted by " + t.by + " · " + ago(t.created) + " ago"));
+}
+
+function render() {
+  const s = state;
+  document.getElementById("home").textContent = s.home;
+  const by = (st) => s.tasks.filter(t => t.status === st).length;
+  document.getElementById("s-events").textContent = s.events;
+  document.getElementById("s-open").textContent = by("open");
+  document.getElementById("s-taken").textContent = by("taken");
+  document.getElementById("s-leases").textContent = s.leases.length;
+  document.getElementById("s-refused").textContent = s.counts.refused + s.counts.denied;
+  document.getElementById("me").textContent = s.me ? "acting as " + s.me : "read-only";
+  document.getElementById("banner").replaceChildren(...(s.me ? [] : [el("div", {class: "banner ro"},
+    "Read-only. Start it with `baton ui --actor <human>` (one of: " + (s.humans.join(", ") || "none in the policy") + ") to approve from here.")]),
+    ...(s.held || s.bad ? [el("div", {class: "banner ro"}, s.held + " event(s) waiting for their parents, " + s.bad + " bad file(s) in the log.")] : []));
+
+  const pending = s.proposals.filter(p => p.status === "pending");
+  document.getElementById("n-pending").textContent = pending.length;
+  fill("pending", pending.map(p => proposalCard(p, [["Approve", "approve", "primary"], ["Reject", "reject", "danger"]])), "Nothing waiting. Proposals from agents land here before anything leaves the machine.");
+
+  const byId = Object.fromEntries(s.tasks.map(t => [t.id, t]));
+  document.getElementById("n-tasks").textContent = s.tasks.length;
+  fill("c-open", s.tasks.filter(t => t.status === "open").map(t => taskCard(t, byId)), "No open tasks.");
+  fill("c-taken", s.tasks.filter(t => t.status === "taken").map(t => taskCard(t, byId)), "Nobody is working.");
+  fill("c-ended", s.tasks.filter(t => !["open", "taken"].includes(t.status)).reverse().slice(0, 30).map(t => taskCard(t, byId)), "Nothing finished yet.");
+
+  const others = s.proposals.filter(p => p.status !== "pending");
+  document.getElementById("n-proposals").textContent = others.length;
+  fill("proposals", others.slice(0, 25).map(p => proposalCard(p, p.status === "approved" ? [["Execute", "execute", "primary"], ["Reject", "reject", "danger"]] : [])), "No decided or refused proposals yet.");
+
+  document.getElementById("n-leases").textContent = s.leases.length;
+  fill("leases", s.leases.length ? [el("table", {}, el("tr", {}, el("th", {}, "who"), el("th", {}, "on"), el("th", {}, "left")),
+    s.leases.map(l => el("tr", {}, el("td", {}, l.actor, el("div", {class: "note"}, l.task)),
+      el("td", {}, [...l.scope.map(x => x || "(whole repo)"), ...l.topics.filter(x => !x.startsWith("task:"))].map(x => el("span", {class: "chip"}, x))),
+      el("td", {class: "num"}, left(l.left), el("div", {class: "bar"}, el("i", {style: "width:" + Math.max(2, Math.min(100, 100 * l.left / l.ttl)) + "%"}))))))] : [], "No leases held.");
+
+  const actors = Object.fromEntries(s.actors.map(a => [a.name, a]));
+  const node = (a) => el("li", {}, el("b", {}, a.name), el("span", {class: "role"}, a.role),
+    a.model ? el("span", {class: "tier"}, a.model + " · " + a.effort) : null,
+    a.children.length ? el("ul", {}, a.children.map(c => node(actors[c]))) : null);
+  document.getElementById("n-actors").textContent = s.actors.filter(a => a.role !== "human").length;
+  fill("tree", s.actors.length ? [el("ul", {}, s.actors.filter(a => !a.parent).map(node))] : [], "No agents have joined.");
+
+  fill("feed", s.feed.map(f => el("div", {}, el("span", {class: "when"}, ago(f.ts)), el("span", {class: "clamp", title: f.text}, el("span", {class: "who"}, f.actor), f.text),
+    f.result === "ok" ? el("span") : pill(f.result))), "No events yet.");
+}
+
+async function refresh() {
+  const live = document.getElementById("live");
+  try {
+    const r = await fetch("api/state", {cache: "no-store"});
+    const text = await r.text();
+    live.classList.remove("stale");
+    if (text !== last && !busy) { last = text; state = JSON.parse(text); render(); }
+  } catch (e) { live.classList.add("stale"); }
+}
+refresh();
+setInterval(refresh, 2000);
+</script>
+</body>
+</html>
