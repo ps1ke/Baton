@@ -2,8 +2,8 @@
 
 The home page is the directory: the projects in your workspace and in the catalogs you follow, with what they need
 and how they link to each other, and a Help button that applies to a project as one of your agents. A project page
-shows its board, leases, agents, applications, proposals and activity, and lets a human of that project admit,
-decline, approve, reject, execute and add links.
+shows its board (with each task's message thread), leases, agents, applications, proposals and activity, and lets a
+human of that project admit, decline, approve, reject, execute, add links and answer agents' messages.
 
 It listens on 127.0.0.1 only. Every write needs the session token printed with the URL (so another web page open in
 the same browser cannot post to it), and every request must name this host, which stops DNS-rebinding pages. All
@@ -77,13 +77,26 @@ def describe(e, s) -> tuple[str, str]:
         p = s.proposals.get(b.get("proposal", ""))
         what = f"{p.action} on {p.target or '-'} by {p.actor}" if p else str(b.get("proposal", ""))[:12]
         text = {"approve": "approved", "reject": "rejected", "executed": "executed"}[k] + " " + what
+    elif k == "message":
+        m = s.messages.get(e.id)
+        where = f" in “{_title(s, m.task)}”" if m and m.task else ""
+        to = f" to {m.to}" if m and m.to else ""
+        text = ("replied" if b.get("reply_to") else "said") + to + where + ": " + str(b.get("text", ""))[:200]
     else:
         text = k
     why = s.ignored.get(e.id) or s.denied.get(e.id) or (s.proposals[e.id].reason if e.id in s.proposals else "")
     return text + (f" — {why}" if why else ""), result
 
 
-def snapshot(store: Store, now: float | None = None) -> dict:
+def _message(m) -> dict:
+    return {"id": m.id, "actor": m.actor, "text": m.text, "task": m.task, "to": m.to, "reply_to": m.reply_to,
+            "root": m.root, "ts": m.ts}
+
+
+MESSAGES = 400
+
+
+def snapshot(store: Store, now: float | None = None, me: str | None = None) -> dict:
     now = time.time() if now is None else now
     ordered, held, bad = store.load()
     s = store.state()
@@ -125,6 +138,8 @@ def snapshot(store: Store, now: float | None = None) -> dict:
         "leases": leases, "proposals": proposals, "applications": applications, "feed": feed,
         "manifest": manifest_of(store, now), "join": s.join_mode,
         "roles": [{"name": r.name, "under": r.under, "model": r.model, "effort": r.effort} for r in pol.roles.values()],
+        "messages": [_message(m) for m in list(s.messages.values())[-MESSAGES:]],
+        "inbox": [m.id for m in s.inbox(me)] if me else [],
         "counts": {"refused": refused, "denied": len(s.denied), "ignored": len(s.ignored)},
         "executors": sorted(forge.ACTIONS),
     }
@@ -160,6 +175,21 @@ def decide(store: Store, actor: str, req: dict) -> dict:
     if e.id in after.ignored:
         raise ValueError(after.ignored[e.id])
     return {"ok": True, "status": after.proposals[pid].status}
+
+
+def say(store: Store, actor: str, req: dict) -> dict:
+    body = {"text": str(req.get("text", ""))}
+    for k in ("task", "to", "reply_to"):
+        v = str(req.get(k) or "").strip()
+        if v:
+            body[k] = v
+    if "reply_to" in body:
+        body.pop("task", None)
+    e = store.append("message", actor, body)
+    after = store.state()
+    if e.id in after.ignored:
+        raise ValueError(after.ignored[e.id])
+    return {"ok": True, "id": e.id}
 
 
 def add_link(store: Store, actor: str, req: dict) -> dict:
@@ -228,7 +258,7 @@ def make_server(ws: Workspace, actor: str | None, host: str = "127.0.0.1", port:
                 extra_home: Path | None = None):
     token = secrets.token_urlsafe(24)
     directory = Directory(ws, extra_home)
-    route = re.compile(r"^/api/p/([\w-]{1,80})/(state|decide|link)$")
+    route = re.compile(r"^/api/p/([\w-]{1,80})/(state|decide|link|message)$")
 
     class Handler(http.server.BaseHTTPRequestHandler):
         server_version = "baton"
@@ -282,7 +312,7 @@ def make_server(ws: Workspace, actor: str | None, host: str = "127.0.0.1", port:
                     store = directory.store(m.group(1))
                 except KeyError as err:
                     return self._json(404, {"error": str(err)})
-                snap = snapshot(store)
+                snap = snapshot(store, me=actor)
                 snap["me"] = actor
                 snap["me_here"] = bool(actor) and actor in snap["humans"]
                 return self._json(200, snap)
@@ -322,7 +352,7 @@ def make_server(ws: Workspace, actor: str | None, host: str = "127.0.0.1", port:
                 store = directory.store(m.group(1))
                 if actor not in store.policy().humans:
                     return self._json(403, {"error": f"{actor} is not a human of this project, so it cannot decide here"})
-                out = decide(store, actor, req) if m.group(2) == "decide" else add_link(store, actor, req)
+                out = {"decide": decide, "link": add_link, "message": say}[m.group(2)](store, actor, req)
                 directory.entries(fresh=True)
                 return self._json(200, out)
             except (KeyError, ValueError, TypeError, RuntimeError, NotImplementedError, OSError) as err:

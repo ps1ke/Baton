@@ -8,7 +8,7 @@
  "additionalProperties": false,
  "properties": {
   "kind": {"enum": ["project", "join", "apply", "admit", "decline", "task", "claim", "renew", "release", "done",
-                    "propose", "approve", "reject", "executed"]},
+                    "propose", "approve", "reject", "executed", "message"]},
   "actor": {"type": "string", "minLength": 1, "maxLength": 120},
   "lamport": {"type": "integer", "minimum": 1},
   "ts": {"type": "number"},

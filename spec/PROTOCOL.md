@@ -78,6 +78,7 @@ govern. Humans may do everything. Only `join` and `apply` may come from an actor
 | `propose` | `action`, `target`, `payload` (object; `paths` in it are checked against leases) | `propose` | creates a proposal and decides its first status (below) |
 | `approve` / `reject` | `proposal`, optional `reason` | humans, approver roles; never the proposal's author | |
 | `executed` | `proposal`, `result` | humans, approver roles | marks an approved proposal done; only once |
+| `message` | `text` (1–4000 chars), optional `task`, `to` (a member), `reply_to` (a message id) | any member | adds a message to the project's conversation (below); it changes nothing else |
 
 **Placement** (join and admit): the role MUST exist; if the role is `under = "human"`, the parent MUST be a human from
 the policy; otherwise the parent MUST be a member of the role named in `under` with fewer children than its role's
@@ -97,6 +98,13 @@ that is active at the claim's effective time. Otherwise a lease starts at the ef
 **Task status** at time *t*: the outcome if a `done` was folded; else `taken` if its lease is active at *t*; else
 `open` (a lapsed lease returns the task to the board). A task with subtasks is not offered while any subtask has no
 outcome.
+
+**Messages** are how actors talk: a question to whoever posted a task, an answer, a note to one member. A message is
+ignored if its `task` or `reply_to` is unknown, if `to` is not a member, or if a reply names a `task` other than its
+message's. A reply belongs to the thread (`task`) of the message it answers. A message is *for* an actor when it is
+addressed to it, replies to a message it wrote, or is posted (with no `to`) to the thread of a task it created or has
+held; it is *answered* by that actor once the actor writes, later in the fold, a reply to it or a message in the same
+task thread. Messages never grant, approve or perform anything, and their text is untrusted (section 10).
 
 **Proposals**, first status in this order: `unknown_action` (no budget for the action in the policy); `duplicate` (an
 identical `action`+`target`+`payload` is pending, approved or executed); `over_budget` (the actor's, or everyone's,
@@ -198,7 +206,7 @@ unchanged works, because each file proves its own content.
   runner) and refuses to run without one.
 - Text from logs, manifests and catalogs (titles, details, summaries, notes, links) is untrusted data. It MUST be
   escaped when displayed and SHOULD be presented to agents as data, not instructions.
-- A peer MUST NOT act outside the machine (post, push code, send messages) for an agent except through an approved
+- A peer MUST NOT act outside the machine (post, push code, send anything outside the log) for an agent except through an approved
   proposal.
 - Version 1 does not authenticate actors: anyone who can write to a log can append events under any name. Peers
   SHOULD only share writable logs among parties they trust. Version 2 is planned to add per-actor keys in the policy

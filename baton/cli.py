@@ -212,6 +212,83 @@ def cmd_status(a):
     return 0
 
 
+def _show(m, s, now) -> str:
+    where = f"[{_task_title(s, m.task)}] " if m.task else ""
+    to = f" -> {m.to}" if m.to else ""
+    return f"{m.id[:12]} {_ago(now - m.ts):>4} {m.actor}{to}: {where}{m.text}"
+
+
+def _task_title(s, task_id):
+    t = s.tasks.get(task_id)
+    return (t.title[:40] if t else "?") + f" {task_id[:8]}"
+
+
+def _ago(sec: float) -> str:
+    sec = max(0, int(sec))
+    return f"{sec}s" if sec < 60 else f"{sec // 60}m" if sec < 3600 else f"{sec // 3600}h" if sec < 86400 else f"{sec // 86400}d"
+
+
+def cmd_message(a):
+    """Say something in the log: in a task's thread, to one member, or as a reply. With --wait, block for the answer."""
+    store = _store(a)
+    s = store.state()
+    body = {"text": a.text if a.text != "-" else sys.stdin.read()}
+    task = a.task or (os.environ.get("BATON_TASK") if not a.reply and not a.to else None)
+    if task:
+        body["task"] = store.resolve(task, s.tasks)
+    if a.to:
+        body["to"] = a.to
+    if a.reply:
+        body["reply_to"] = store.resolve(a.reply, s.messages)
+        body.pop("task", None)
+    me = _actor(a)
+    e = store.append("message", me, body)
+    code, text = _outcome(store, e)
+    print(text)
+    if code or not a.wait:
+        return code
+    deadline = time.time() + pol.duration(a.wait)
+    while time.time() < deadline:
+        s = store.state()
+        mine = s.messages.get(e.id)
+        answers = [m for m in s.messages.values() if m.actor != me and m.seq > mine.seq
+                   and (m.reply_to == e.id or (mine.task and m.task == mine.task) or (m.to == me and not m.task))]
+        if answers:
+            for m in answers:
+                print(_show(m, s, time.time()))
+            return 0
+        time.sleep(2)
+    print(f"no answer within {a.wait}")
+    return 3
+
+
+def cmd_inbox(a):
+    s = _store(a).state()
+    now = time.time()
+    got = s.inbox(_actor(a), unanswered=not a.all)
+    if a.json:
+        print(json.dumps([{"id": m.id, "actor": m.actor, "text": m.text, "task": m.task, "to": m.to,
+                           "reply_to": m.reply_to, "ts": m.ts} for m in got], ensure_ascii=False))
+        return 0
+    for m in got:
+        print(_show(m, s, now))
+    if not got:
+        print("nothing waiting" if not a.all else "no messages")
+    return 0
+
+
+def cmd_thread(a):
+    store = _store(a)
+    s = store.state()
+    tid = store.resolve(a.task_id, s.tasks)
+    t = s.tasks[tid]
+    print(f"{tid[:12]} {s.task_status(t, time.time())}: {t.title}")
+    now = time.time()
+    for m in s.thread(tid):
+        print("  " + _show(m, s, now))
+    return 0
+
+
 def cmd_whoami(a):
     s = _store(a).state()
     x = s.actors.get(_actor(a))
@@ -445,6 +522,14 @@ def main(argv=None) -> int:
     p.set_defaults(fn=cmd_execute)
     p = sub.add_parser("status"); p.add_argument("--all", action="store_true"); p.set_defaults(fn=cmd_status)
     sub.add_parser("whoami").set_defaults(fn=cmd_whoami)
+    p = sub.add_parser("message", help="talk in the log: a task thread, one member, or a reply")
+    p.add_argument("text", help='the message, or "-" to read it from stdin')
+    p.add_argument("--task", help="the task thread (default inside a run: BATON_TASK)")
+    p.add_argument("--to", help="one member"); p.add_argument("--reply", help="the message id you answer")
+    p.add_argument("--wait", help="then wait this long for an answer, e.g. 10m"); p.set_defaults(fn=cmd_message)
+    p = sub.add_parser("inbox", help="messages waiting for your answer"); p.add_argument("--all", action="store_true")
+    p.add_argument("--json", action="store_true"); p.set_defaults(fn=cmd_inbox)
+    p = sub.add_parser("thread", help="a task and its messages"); p.add_argument("task_id"); p.set_defaults(fn=cmd_thread)
     p = sub.add_parser("project", help="create, change, link and publish this log's project")
     p.add_argument("action", choices=("create", "set", "show", "link", "publish"))
     p.add_argument("catalog", nargs="?", help="publish: the catalog file to add the manifest to")

@@ -91,6 +91,22 @@ class Proposal:
 
 
 @dataclass
+class Message:
+    id: str
+    seq: int                     # position in the fold: later messages have larger seq
+    actor: str
+    text: str
+    task: str | None             # the task thread it belongs to
+    to: str | None               # addressed to one actor (else everyone following the thread)
+    reply_to: str | None
+    root: str                    # the first message of its reply chain
+    ts: float
+
+
+MESSAGE_MAX = 4000
+
+
+@dataclass
 class Actor:
     name: str
     role: str
@@ -108,6 +124,7 @@ class State:
     proposals: dict[str, Proposal] = field(default_factory=dict)
     tasks: dict[str, Task] = field(default_factory=dict)
     applications: dict[str, Application] = field(default_factory=dict)
+    messages: dict[str, Message] = field(default_factory=dict)  # in fold order
     project_id: str | None = None                               # the genesis `project` event
     project: dict = field(default_factory=dict)                 # the project's current public fields
     project_updated: float = 0.0
@@ -148,6 +165,29 @@ class State:
         """Every path is inside a lease the actor holds at time t."""
         held = [l for l in self.active_leases(t) if l.actor == actor]
         return all(any(paths.inside(p, lp) for l in held for lp in l.paths) for p in scope_paths)
+
+    def thread(self, task_id: str) -> list[Message]:
+        return [m for m in self.messages.values() if m.task == task_id]
+
+    def _answered(self, m: Message, actor: str) -> bool:
+        """`actor` wrote after `m` in reply to it, or later in the same task thread."""
+        return any(x.actor == actor and x.seq > m.seq and (x.reply_to == m.id or (m.task and x.task == m.task))
+                   for x in self.messages.values())
+
+    def inbox(self, actor: str, unanswered: bool = True) -> list[Message]:
+        """Messages for `actor`: addressed to it, replies to what it wrote, or posted to the thread of a task it
+        created or has held, and (by default) only those it has not answered yet."""
+        mine = {t.id for t in self.tasks.values()
+                if t.by == actor or (t.lease and t.lease in self.leases and self.leases[t.lease].actor == actor)}
+        wrote = {m.id for m in self.messages.values() if m.actor == actor}
+        out = []
+        for m in self.messages.values():
+            if m.actor == actor:
+                continue
+            if m.to == actor or m.reply_to in wrote or (m.to is None and m.task in mine):
+                if not unanswered or not self._answered(m, actor):
+                    out.append(m)
+        return out
 
     def ancestors(self, name: str) -> list[str]:
         out, seen = [], set()
@@ -190,6 +230,8 @@ class _Folder:
             return None if a.role in self.p.approver_roles else f"role {a.role} cannot execute"
         if need == "govern":
             return None if a.role in self.p.approver_roles else f"role {a.role} cannot change the project"
+        if need == "talk":    # every member may talk; messages never act on anything
+            return None
         if need == "admit":   # approvers, or a role that may admit (then only under itself: on_admit checks)
             ok = a.role in self.p.approver_roles or "admit" in self.p.roles[a.role].can
             return None if ok else f"role {a.role} cannot admit members"
@@ -405,6 +447,27 @@ class _Folder:
             return self.ignore(e, "lease had already ended")
         lease.released = True
         lease.expiry = t
+
+    # -- talk -------------------------------------------------------------------------------------------------
+    def on_message(self, e, t):
+        b = e.body
+        text = b.get("text")
+        if not isinstance(text, str) or not text.strip() or len(text) > MESSAGE_MAX:
+            return self.ignore(e, f"a message needs text of at most {MESSAGE_MAX} characters")
+        task, to, reply_to = b.get("task"), b.get("to"), b.get("reply_to")
+        root = e.id
+        if reply_to is not None:
+            first = self.s.messages.get(reply_to)
+            if first is None:
+                return self.ignore(e, "reply to an unknown message")
+            if task is not None and task != first.task:
+                return self.ignore(e, "a reply stays in its message's task thread")
+            task, root = first.task, first.root
+        if task is not None and task not in self.s.tasks:
+            return self.ignore(e, "no such task")
+        if to is not None and to not in self.s.actors:
+            return self.ignore(e, f"{to} is not a member")
+        self.s.messages[e.id] = Message(e.id, len(self.s.messages), e.actor, text, task, to, reply_to, root, t)
 
     # -- outward actions ----------------------------------------------------------------------------------------
     def on_propose(self, e, t):

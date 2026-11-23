@@ -135,6 +135,23 @@ class UiTests(unittest.TestCase):
         status, d = self.call(port, "POST", f"/api/p/{self.pid}/link", {"rel": "likes", "project": "x"}, h)
         self.assertEqual(status, 400)
 
+    def test_messages_show_in_the_inbox_and_humans_answer(self):
+        q = self.s.append("message", "w1", {"text": "<i>which file?</i>", "task": self.task.id}, T0 + 9)
+        self.s.append("message", "w1", {"text": "hello ana", "to": "human:ana"}, T0 + 10)
+        snap = ui.snapshot(self.s, now=T0 + 11, me="human:ana")
+        self.assertEqual(len(snap["inbox"]), 1)                       # addressed to ana; the task is o's
+        self.assertEqual(snap["messages"][0]["text"], "<i>which file?</i>")
+        self.assertTrue(any(f["kind"] == "message" for f in snap["feed"]))
+        port, token = self.start("human:ana")
+        h = {"X-Baton-Token": token}
+        status, d = self.call(port, "POST", f"/api/p/{self.pid}/message", {"text": "parser.py", "reply_to": q.id}, h)
+        self.assertEqual(status, 200, d)
+        self.assertEqual(self.s.state().messages[d["id"]].task, self.task.id)
+        status, d = self.call(port, "POST", f"/api/p/{self.pid}/message", {"text": " "}, h)
+        self.assertEqual(status, 400)
+        port2, token2 = self.start("human:zed")
+        self.assertEqual(self.call(port2, "POST", f"/api/p/{self.pid}/message", {"text": "hi"}, {"X-Baton-Token": token2})[0], 403)
+
     def test_catalogs_can_be_added_and_read_only_mode(self):
         port, token = self.start(None)
         status, _ = self.call(port, "POST", "/api/catalogs", {"source": "/x.json"}, {"X-Baton-Token": token})

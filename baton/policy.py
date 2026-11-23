@@ -65,7 +65,7 @@ class Policy:
     def role_of_kind(self, kind: str) -> str:
         return {"claim": "claim", "renew": "claim", "release": "claim", "done": "claim", "task": "plan",
                 "project": "govern", "admit": "admit", "decline": "admit",
-                "propose": "propose",
+                "propose": "propose", "message": "talk",
                 "approve": "approve", "reject": "approve", "executed": "execute"}.get(kind, kind)
 
 

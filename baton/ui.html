@@ -66,6 +66,14 @@ input:focus, select:focus, textarea:focus, button:focus-visible { outline: 2px s
 .card .t { font-weight: 600; overflow-wrap: anywhere; }
 .card .m { color: var(--muted); font-size: 12px; margin-top: 4px; overflow-wrap: anywhere; }
 .card.sub { margin-left: 12px; border-left: 3px solid var(--line); }
+.thread { margin-top: 8px; border-top: 1px solid var(--line); padding-top: 6px; }
+.msg { font-size: 12.5px; padding: 4px 0; overflow-wrap: anywhere; white-space: pre-wrap; }
+.msg .who { font-weight: 600; }
+.msg .when { color: var(--muted); font-size: 11px; margin-left: 4px; }
+.msg.reply { margin-left: 12px; }
+.say { display: flex; gap: 6px; margin-top: 6px; }
+.say input { flex: 1; min-width: 0; }
+button.talk { font-size: 12px; padding: 2px 8px; margin-top: 6px; }
 .chip { display: inline-block; font: 11px var(--mono); padding: 1px 6px; border-radius: 4px; background: var(--soft);
   color: var(--muted); margin: 2px 4px 0 0; overflow-wrap: anywhere; }
 .chip.need { background: var(--info-bg); color: var(--info); }
@@ -209,6 +217,19 @@ dialog label { display: grid; gap: 4px; font-size: 12px; color: var(--muted); }
 const token = new URLSearchParams(location.hash.slice(1)).get("token") || "";
 let dir = null, state = null, lastDir = "", lastState = "", busy = false, helpFor = null, timer = null;
 const tagFilter = new Set();
+const drafts = {}, openThreads = new Set();
+function draft(key, attrs) {   // an input whose text and focus survive the page re-rendering every 2s
+  const n = el("input", Object.assign({"data-key": key}, attrs || {}));
+  n.value = drafts[key] || "";
+  n.addEventListener("input", () => { drafts[key] = n.value; });
+  return n;
+}
+function keepFocus(render) {
+  const a = document.activeElement, key = a && a.getAttribute && a.getAttribute("data-key");
+  const sel = key ? [a.selectionStart, a.selectionEnd] : null;
+  render();
+  if (key) { const n = document.querySelector('[data-key="' + CSS.escape(key) + '"]'); if (n) { n.focus(); try { n.setSelectionRange(...sel); } catch (e) {} } }
+}
 
 function el(tag, attrs, ...kids) {
   const n = document.createElement(tag);
@@ -376,7 +397,7 @@ async function refreshProject() {
     const r = await fetch("/api/p/" + encodeURIComponent(key) + "/state", {cache: "no-store"});
     const text = await r.text();
     if (!r.ok) { $("p-banner").replaceChildren(el("div", {class: "banner"}, (JSON.parse(text).error) || "not found")); return; }
-    if (text !== lastState && !busy) { lastState = text; state = JSON.parse(text); renderProject(); }
+    if (text !== lastState && !busy) { lastState = text; state = JSON.parse(text); keepFocus(renderProject); }
   } catch (e) { $("stats").replaceChildren(setLive(false)); }
 }
 async function act(path, body, errBox) {
@@ -422,8 +443,34 @@ function appCard(a) {
       decideBtn("Admit", {decision: "admit", applicant: a.actor}, "primary", s.me_here, whyNot(s), err),
       decideBtn("Decline", {decision: "decline", applicant: a.actor}, "danger", s.me_here, whyNot(s), err)) : null, err);
 }
+function sayBox(key, body, label) {
+  const s = state, err = el("div", {class: "err"});
+  if (!s.me_here) return null;
+  const input = draft(key, {placeholder: label || "Write a message…", maxlength: 4000});
+  const send = () => {
+    const text = input.value.trim(); if (!text) return;
+    delete drafts[key];
+    act("/api/p/" + encodeURIComponent(current()) + "/message", Object.assign({text}, body), err);
+  };
+  input.addEventListener("keydown", (ev) => { if (ev.key === "Enter") send(); });
+  return el("div", {}, el("div", {class: "say"}, input, el("button", {onclick: send}, "Send")), err);
+}
+function msgLine(m) {
+  return el("div", {class: "msg" + (m.reply_to ? " reply" : "")}, el("span", {class: "who"}, m.actor),
+    m.to ? el("span", {class: "note"}, " → " + m.to) : null, el("span", {class: "when"}, ago(m.ts, state.now) + " ago"), "\n", m.text);
+}
+function threadOf(taskId) { return state.messages.filter(m => m.task === taskId); }
+function msgCard(m, byId) {   // a message waiting for my answer
+  const t = m.task && byId[m.task];
+  return el("div", {class: "proposal"},
+    el("div", {class: "head"}, pill("pending", "message"), el("span", {class: "what"}, m.actor + (m.to ? " asks you" : " wrote")),
+      el("span", {class: "note"}, (t ? "on “" + t.title + "” · " : "") + ago(m.ts, state.now) + " ago")),
+    el("pre", {}, m.text),
+    sayBox("reply:" + m.id, {reply_to: m.id}, "Answer " + m.actor + "…"));
+}
 function taskCard(t, byId) {
   const s = state, parent = t.parent && byId[t.parent];
+  const thread = threadOf(t.id), open = openThreads.has(t.id);
   return el("div", {class: "card" + (t.parent ? " sub" : "")},
     el("div", {class: "t"}, t.title),
     t.detail ? el("div", {class: "m clamp", title: t.detail}, t.detail) : null,
@@ -433,7 +480,11 @@ function taskCard(t, byId) {
     t.subtasks.length ? el("div", {class: "m"}, t.subtasks.length + " subtask(s)") : null,
     t.left != null ? el("div", {class: "m"}, "held by " + t.holder + " · " + left(t.left) + " left") : null,
     t.summary ? el("div", {class: "m clamp", title: t.summary}, t.summary) : null,
-    el("div", {class: "m"}, short(t.id) + " · posted by " + t.by + " · " + ago(t.created, s.now) + " ago"));
+    el("div", {class: "m"}, short(t.id) + " · posted by " + t.by + " · " + ago(t.created, s.now) + " ago"),
+    (thread.length || s.me_here) ? el("button", {class: "talk", "aria-expanded": open ? "true" : "false",
+      onclick: () => { open ? openThreads.delete(t.id) : openThreads.add(t.id); keepFocus(renderProject); }},
+      thread.length ? "💬 " + thread.length + (open ? " · hide" : "") : (open ? "hide" : "💬 message")) : null,
+    open ? el("div", {class: "thread"}, thread.map(msgLine), sayBox("task:" + t.id, {task: t.id}, "Message this task's thread…")) : null);
 }
 function projectHead() {
   const s = state, m = s.manifest, known = knownProjects();
@@ -480,10 +531,12 @@ function renderProject() {
   $("p-banner").replaceChildren(...banners);
   $("p-head").replaceChildren(...projectHead());
   const pendingApps = s.applications.filter(a => a.status === "pending"), pending = s.proposals.filter(p => p.status === "pending");
-  $("n-pending").textContent = pending.length + pendingApps.length;
-  fill("pending", [...pendingApps.map(appCard), ...pending.map(p => proposalCard(p, [["Approve", "approve", "primary"], ["Reject", "reject", "danger"]]))],
-    "Nothing waiting. Applications and agents' proposals land here before anything happens.");
   const byId = Object.fromEntries(s.tasks.map(t => [t.id, t]));
+  const asks = s.messages.filter(m => s.inbox.includes(m.id));
+  $("n-pending").textContent = pending.length + pendingApps.length + asks.length;
+  fill("pending", [...asks.map(m => msgCard(m, byId)), ...pendingApps.map(appCard),
+    ...pending.map(p => proposalCard(p, [["Approve", "approve", "primary"], ["Reject", "reject", "danger"]]))],
+    "Nothing waiting. Agents' questions, applications and proposals land here before anything happens.");
   $("n-tasks").textContent = s.tasks.length;
   fill("c-open", s.tasks.filter(t => t.status === "open").map(t => taskCard(t, byId)), "No open tasks.");
   fill("c-taken", s.tasks.filter(t => t.status === "taken").map(t => taskCard(t, byId)), "Nobody is working.");
