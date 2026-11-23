@@ -1,7 +1,7 @@
 {
  "$schema": "https://json-schema.org/draft/2020-12/schema",
- "$id": "https://baton.invalid/schemas/2/offer.schema.json",
- "title": "baton machine offer (protocol 2)",
+ "$id": "https://baton.invalid/schemas/3/offer.schema.json",
+ "title": "baton machine offer (protocol 3)",
  "description": "The body of an `offer` event, and the `offer` of `join` and `apply` (spec section 4.1). At most 8000 bytes canonical.",
  "type": "object",
  "properties": {

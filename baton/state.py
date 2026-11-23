@@ -62,6 +62,7 @@ class Task:
     hardware: tuple[str, ...] = ()
     depends_on: tuple[str, ...] = ()
     of: str | None = None              # a test or review: the implement package it checks
+    base: str | None = None            # the repository commit the package starts from (children inherit it)
     lease: str | None = None           # the lease that holds it now (or last held it)
     outcome: str | None = None         # done failed escalated
     summary: str = ""
@@ -89,6 +90,7 @@ class Application:
     id: str
     actor: str
     offer: dict
+    key: str
     note: str
     ts: float
     status: str = "pending"     # pending admitted declined
@@ -130,6 +132,7 @@ class Message:
 
 
 MESSAGE_MAX = 4000
+LEVEL0_ACTIONS = ("push",)   # actions only level 0 may even propose: writing to the project's repository
 
 
 @dataclass
@@ -139,13 +142,21 @@ class Actor:
     joined: float = 0.0
     offer: dict = field(default_factory=dict)
     offer_at: float | None = None
+    key: str = ""                # the one public key whose events count as this actor's
+    right: str = "member"        # author | steward | member (humans in a private log: "human")
+    revoked: bool = False
 
     @property
     def role(self):              # older readers
         return "human" if self.kind == "human" else "member"
 
+    @property
+    def level0(self) -> bool:
+        """May make level-0 decisions: plan and integrate the top level, admit, approve, push."""
+        return not self.revoked and self.right in ("author", "steward", "human")
+
     def present(self, t: float) -> bool:
-        if self.offer_at is None:
+        if self.offer_at is None or self.revoked:
             return False
         return self.offer_at <= t < self.offer_at + float(self.offer.get("ttl", 0))
 
@@ -164,6 +175,17 @@ class State:
     project: dict = field(default_factory=dict)
     project_updated: float = 0.0
     ignored: dict[str, str] = field(default_factory=dict)
+    author: str | None = None                                   # project mode: who signed the genesis
+    policy_from: str | None = None                              # the `policy` event in force, if any
+
+    @property
+    def mode(self) -> str:
+        """project: authority comes from the genesis signer's key. private: a log without a project, where the
+        humans listed in the local policy.toml decide (each bound to the first key they sign with)."""
+        return "project" if self.project_id else "private"
+
+    def stewards(self) -> list[Actor]:
+        return [a for a in self.actors.values() if a.level0 and a.right in ("author", "steward")]
 
     @property
     def join_mode(self) -> str:
@@ -296,26 +318,42 @@ class _Folder:
         self.p = policy
         self.s = State(policy=policy)
         self.eff: dict[str, float] = {}
-        for h in sorted(policy.humans):
-            self.s.actors[h] = Actor(h, "human")
 
     def ignore(self, e: ev.Event, why: str):
         self.s.ignored[e.id] = why
 
-    GOVERN = {"project", "admit", "decline", "approve", "reject", "executed"}
+    AUTHOR_ONLY = {"policy", "grant"}
+    LEVEL0 = {"project", "admit", "decline", "approve", "reject", "executed", "revoke"}
 
     def allowed(self, e: ev.Event) -> str | None:
         a = self.s.actors.get(e.actor)
         if a is None:
             return "actor has not joined"
-        if a.kind == "human" or e.kind not in self.GOVERN:
-            return None
-        return None if e.actor in self.p.approvers else f"{e.kind} is for humans and approvers"
+        if a.revoked:
+            return f"{e.actor} was revoked"
+        if a.key and e.key != a.key:
+            return f"signed by a key that is not {e.actor}'s"
+        if not a.key:
+            a.key = e.key   # a private log's human: bound to the first key it signs with
+        if e.kind in self.AUTHOR_ONLY:
+            return None if a.right == "author" or (self.s.mode == "private" and a.right == "human") \
+                else f"only the author may {e.kind}"
+        if e.kind in self.LEVEL0 and not (a.level0 or e.actor in self.p.approvers):
+            return f"{e.kind} is a level-0 decision (author and stewards)"
+        return None
 
     def run(self, ordered: list[ev.Event]) -> State:
+        genesis = ordered[0] if ordered and ordered[0].kind == "project" and ordered[0].body.get("name") else None
+        if genesis is None:   # a private log: the local policy names its humans
+            for h in sorted(self.p.humans):
+                self.s.actors[h] = Actor(h, "human", right="human")
         for e in ordered:
             t = max([e.ts] + [self.eff.get(pid, 0.0) for pid in e.parents])
             self.eff[e.id] = t
+            if e is genesis:
+                self.s.actors[e.actor] = Actor(e.actor, "human" if e.actor.startswith("human:") else "member",
+                                               joined=t, key=e.key, right="author")
+                self.s.author = e.actor
             if e.kind not in ("join", "apply"):
                 why = self.allowed(e)
                 if why:
@@ -327,17 +365,59 @@ class _Folder:
                 self.ignore(e, f"bad body: {err}")
         return self.s
 
+    # -- authority: the author grants and revokes, and sets the policy ----------------------------------------------
+    def on_grant(self, e, t):
+        """{to, key, right: steward|member}: make `to` a steward (level 0) or a member, bound to `key`."""
+        to, key, right = str(e.body["to"]), str(e.body.get("key", "")), e.body.get("right", "steward")
+        if right not in ("steward", "member"):
+            return self.ignore(e, "right must be steward or member")
+        if not (len(key) == 64 and all(c in "0123456789abcdef" for c in key)):
+            return self.ignore(e, "a grant names the public key it binds (64 hex characters)")
+        if to == self.s.author:
+            return self.ignore(e, "the author already holds every right")
+        a = self.s.actors.get(to)
+        if a is None:
+            a = Actor(to, "human" if to.startswith("human:") else "member", joined=t)
+            self.s.actors[to] = a
+        a.key, a.right, a.revoked = key, right, False
+
+    def on_revoke(self, e, t):
+        target = self.s.actors.get(str(e.body["actor"]))
+        if target is None:
+            return self.ignore(e, "no such actor")
+        if target.right == "author":
+            return self.ignore(e, "the author cannot be revoked")
+        if target.right == "steward" and self.s.actors[e.actor].right != "author":
+            return self.ignore(e, "only the author revokes a steward")
+        target.revoked = True
+        for l in self.s.active_leases(t):
+            if l.actor == target.name:
+                l.released, l.expiry = True, t
+
+    def on_policy(self, e, t):
+        from .policy import parse
+        text = e.body.get("toml")
+        if not isinstance(text, str) or len(text) > 20000:
+            return self.ignore(e, "a policy event carries the policy.toml text (at most 20000 characters)")
+        try:
+            new = parse(text)
+        except ValueError as err:
+            return self.ignore(e, f"bad policy: {err}")
+        self.p = new
+        self.s.policy = new
+        self.s.policy_from = e.id
+
     # -- members --------------------------------------------------------------------------------------------------
-    def _member(self, name: str, offer, t: float) -> str | None:
+    def _member(self, name: str, offer, t: float, key: str) -> str | None:
         if name in self.s.actors:
             return "already a member"
         if name.startswith("human:"):
-            return "human:... names are for the humans listed in the policy"
+            return "human:... names are for the author and the humans it grants"
         offer = offer or {}
         errors = check_offer(offer)
         if errors:
             return "; ".join(errors)
-        a = Actor(name, "member", joined=t)
+        a = Actor(name, "member", joined=t, key=key)
         self.s.actors[name] = a
         if offer.get("models"):
             self._set_offer(a, offer, t)
@@ -351,7 +431,7 @@ class _Folder:
     def on_join(self, e, t):
         if self.s.join_mode != "open":
             return self.ignore(e, f"this project takes members by application (join: {self.s.join_mode})")
-        why = self._member(e.actor, e.body.get("offer"), t)
+        why = self._member(e.actor, e.body.get("offer"), t, e.key)
         if why:
             self.ignore(e, why)
 
@@ -375,6 +455,8 @@ class _Folder:
         if self.s.project_id is None:
             if not fields.get("name"):
                 return self.ignore(e, "the first project event (the genesis) needs a name")
+            if not fields.get("repo") or not mf.git_url_ok(fields["repo"]) and not str(fields["repo"]).startswith("https://"):
+                return self.ignore(e, "a project starts from a repository: the genesis needs repo (its git URL)")
             self.s.project_id = e.id
         for k, v in fields.items():
             if v is None:
@@ -399,7 +481,7 @@ class _Folder:
         note = e.body.get("note", "")
         if not isinstance(note, str) or len(note) > 2000:
             return self.ignore(e, "note must be a string of at most 2000 characters")
-        self.s.applications[e.id] = Application(e.id, e.actor, offer, note, t)
+        self.s.applications[e.id] = Application(e.id, e.actor, offer, e.key, note, t)
 
     def _application(self, e) -> Application | None:
         name = e.body["applicant"]
@@ -413,7 +495,7 @@ class _Folder:
         app = self._application(e)
         if app is None:
             return
-        why = self._member(app.actor, app.offer, t)
+        why = self._member(app.actor, app.offer, t, app.key)
         if why:
             return self.ignore(e, why)
         app.status, app.decided_by = "admitted", e.actor
@@ -430,7 +512,7 @@ class _Folder:
         errors = wp.check_package(b)
         if errors:
             return self.ignore(e, "; ".join(errors))
-        human = self.s.actors[e.actor].kind == "human" or e.actor in self.p.approvers
+        human = self.s.actors[e.actor].level0 or e.actor in self.p.approvers
         parent = self.s.tasks.get(b["parent"]) if b.get("parent") else None
         if b.get("parent") and parent is None:
             return self.ignore(e, "no such parent package")
@@ -463,7 +545,7 @@ class _Folder:
                     topics=_str_list(b.get("topics")), acceptance=list(b.get("acceptance") or []),
                     deliverables=list(b.get("deliverables") or []), constraints=list(b.get("constraints") or []),
                     inputs=list(b.get("inputs") or []), size=b.get("size"), tier=tier,
-                    hardware=_str_list((b.get("needs") or {}).get("hardware")), depends_on=deps)
+                    hardware=_str_list((b.get("needs") or {}).get("hardware")), depends_on=deps, base=b.get("base"))
         self.s.tasks[e.id] = task
         if parent:
             parent.subtasks.append(e.id)
@@ -659,6 +741,9 @@ class _Folder:
         if budget is None:
             pr.status, pr.reason = "unknown_action", f"no [budgets.{action}] in the policy"
             return
+        if action in LEVEL0_ACTIONS and not self.s.actors[e.actor].level0:
+            pr.status, pr.reason = "not_level0", f"only the author and its stewards may {action}"
+            return
         same = [q for q in self.s.proposals.values() if q is not pr and q.key == key and q.counts]
         if same:
             pr.status, pr.reason = "duplicate", f"same as {same[0].id[:12]} by {same[0].actor}"
@@ -680,7 +765,8 @@ class _Folder:
         if scope and not self.s.covered(e.actor, scope, t):
             pr.status, pr.reason = "unleased", "the actor holds no active lease covering these paths"
             return
-        if e.actor in self.p.auto.get(action, ()):
+        auto = self.p.auto.get(action, ())
+        if e.actor in auto or ("stewards" in auto and self.s.actors[e.actor].level0):
             pr.status, pr.decided_by = "approved", "policy"
 
     def _pending(self, e) -> Proposal | None:

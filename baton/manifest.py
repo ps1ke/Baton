@@ -9,7 +9,7 @@ from __future__ import annotations
 import re
 from datetime import datetime, timezone
 
-PROTOCOL = "2"
+PROTOCOL = "3"
 CATALOG = "1"
 JOIN_MODES = ("open", "apply", "closed")
 RELS = ("depends-on", "dependency-of", "related", "fork-of", "upstream", "downstream", "successor", "predecessor")
@@ -64,7 +64,9 @@ def check_fields(d: dict) -> list[str]:
     _str(errors, "summary", d.get("summary"), 280)
     _str(errors, "description", d.get("description"), 10000)
     _url(errors, "homepage", d.get("homepage"))
-    _url(errors, "repo", d.get("repo"))
+    repo = d.get("repo")
+    if repo is not None and not (git_url_ok(repo) or (isinstance(repo, str) and _URL.fullmatch(repo) and len(repo) <= 500)):
+        errors.append("repo must be the repository's URL (https://, ssh://, git@host: or file://)")
     log = d.get("log")
     if log is not None:
         if not isinstance(log, dict) or not git_url_ok(log.get("git")):

@@ -1,8 +1,17 @@
 """Shared test setup: a log with human:ana and machines that offer models (no roles: the network assigns work)."""
 
+import atexit
 import json
+import os
+import shutil
 import sys
+import tempfile
 from pathlib import Path
+
+# Every test run gets a throwaway workspace (keys included), never the user's real one.
+_TMP = tempfile.mkdtemp(prefix="baton-tests-")
+os.environ["BATON_WORKSPACE"] = os.path.join(_TMP, "ws")
+atexit.register(shutil.rmtree, _TMP, True)
 
 from baton import policy as pol
 from baton.store import Store

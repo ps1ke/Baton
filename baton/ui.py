@@ -113,8 +113,10 @@ def snapshot(store: Store, now: float | None = None, me: str | None = None) -> d
 
     from . import network
     used = network.load(s, now)
+    from .crypto import fingerprint
     members = [{"name": a.name, "present": a.present(now), "offer": a.offer, "busy": used.get(a.name, 0),
-                "last_seen": a.offer_at, "joined": a.joined} for a in s.members()]
+                "last_seen": a.offer_at, "joined": a.joined, "right": a.right, "revoked": a.revoked,
+                "key": fingerprint(a.key) if a.key else None} for a in s.members()]
     picks = {k: {"member": v.member, "model": v.model, "tier": v.tier} for k, v in network.assign(s, pol, now).items()}
     tasks = []
     for t in sorted(s.tasks.values(), key=lambda x: (x.created, x.id)):
@@ -148,17 +150,18 @@ def snapshot(store: Store, now: float | None = None, me: str | None = None) -> d
     refused = sum(1 for p in s.proposals.values() if p.status in ("duplicate", "over_budget", "unleased", "unknown_action"))
     return {
         "now": now, "home": str(store.home.resolve()), "events": len(ordered), "held": len(held), "bad": len(bad),
-        "humans": sorted(pol.humans), "members": members, "assignment": picks, "tasks": tasks,
+        "humans": sorted(a.name for a in s.actors.values() if a.kind == "human" and a.level0) or sorted(pol.humans),
+        "author": s.author, "mode": s.mode, "members": members, "assignment": picks, "tasks": tasks,
         "leases": leases, "proposals": proposals, "applications": applications, "feed": feed,
         "manifest": manifest_of(store, now), "join": s.join_mode,
-        "network": {"max_depth": pol.max_depth, "max_children": pol.max_children, "max_rework": pol.max_rework,
+        "network": {"max_depth": s.policy.max_depth, "max_children": pol.max_children, "max_rework": pol.max_rework,
                     "orchestrate": list(pol.orchestrate), "tiers": pol.tiers, "pipeline": list(pol.pipeline),
                     "presence_ttl": pol.presence_ttl},
         "sync": sync.status_of(store.home),
         "messages": [_message(m) for m in list(s.messages.values())[-MESSAGES:]],
         "inbox": [m.id for m in s.inbox(me)] if me else [],
         "counts": {"refused": refused, "denied": len(s.denied), "ignored": len(s.ignored)},
-        "executors": sorted(forge.ACTIONS),
+        "executors": sorted(forge.ACTIONS) + ["push"],
     }
 
 
@@ -185,7 +188,8 @@ def decide(store: Store, actor: str, req: dict) -> dict:
         p = s.proposals[pid]
         if p.status != "approved":
             raise ValueError(f"proposal is {p.status}; only an approved proposal runs")
-        e = store.append("executed", actor, {"proposal": pid, "result": forge.execute(p.action, p.target, p.payload)})
+        from .cli import execute_action
+        e = store.append("executed", actor, {"proposal": pid, "result": execute_action(store, p)})
     else:
         raise ValueError(f"unknown decision {decision!r}")
     after = store.state()

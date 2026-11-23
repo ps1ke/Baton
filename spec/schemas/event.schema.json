@@ -1,20 +1,22 @@
 {
  "$schema": "https://json-schema.org/draft/2020-12/schema",
- "$id": "https://baton.invalid/schemas/2/event.schema.json",
- "title": "baton event (protocol 2)",
+ "$id": "https://baton.invalid/schemas/3/event.schema.json",
+ "title": "baton event (protocol 3)",
  "description": "One event. `id` is the SHA-256 of the canonical JSON of the other six fields (spec section 3); a schema cannot check that, a reader must.",
  "type": "object",
- "required": ["kind", "actor", "lamport", "ts", "parents", "body", "id"],
+ "required": ["kind", "actor", "lamport", "ts", "parents", "body", "key", "id", "sig"],
  "additionalProperties": false,
  "properties": {
   "kind": {"enum": ["project", "join", "apply", "admit", "decline", "task", "claim", "renew", "release", "done",
-                    "propose", "approve", "reject", "executed", "message", "offer"]},
+                    "propose", "approve", "reject", "executed", "message", "offer", "grant", "revoke", "policy"]},
   "actor": {"type": "string", "minLength": 1, "maxLength": 120},
   "lamport": {"type": "integer", "minimum": 1},
   "ts": {"type": "number"},
   "parents": {"type": "array", "items": {"$ref": "#/$defs/id"}, "uniqueItems": true},
   "body": {"type": "object"},
-  "id": {"$ref": "#/$defs/id"}
+  "key": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+  "id": {"$ref": "#/$defs/id"},
+  "sig": {"type": "string", "pattern": "^[0-9a-f]{128}$"}
  },
  "$defs": {"id": {"type": "string", "pattern": "^[0-9a-f]{64}$"}}
 }

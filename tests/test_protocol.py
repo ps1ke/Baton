@@ -20,7 +20,7 @@ def make_project(root: Path, name="toy", **fields) -> Store:
     s = Store(root)
     s.init()
     (s.home / "policy.toml").write_text(POLICY, encoding="utf-8")
-    s.append("project", "human:ana", {"name": name, "summary": "a toy", "tags": ["python"],
+    s.append("project", "human:ana", {"name": name, "repo": "https://example.org/toy.git", "summary": "a toy", "tags": ["python"],
                                      "needs": [{"tier": "standard", "skills": ["python"], "count": 2}], **fields}, T0)
     return s
 
@@ -53,7 +53,7 @@ class ProjectTests(Base):
         self.assertEqual((s.project["summary"], s.project["join"], "tags" in s.project), ("better", "open", False))
         self.p.append("join", "plan", {"offer": offer()}, T0 + 2)
         e = self.p.append("project", "plan", {"name": "mine now"}, T0 + 3)
-        self.assertIn("for humans and approvers", self.p.state().ignored[e.id])
+        self.assertIn("level-0 decision", self.p.state().ignored[e.id])
         bad = self.p.append("project", "human:ana", {"homepage": "javascript:alert(1)"}, T0 + 4)
         self.assertIn("http(s) URL", self.p.state().ignored[bad.id])
 
@@ -91,7 +91,7 @@ class JoiningTests(Base):
     def test_members_do_not_admit_unless_they_are_approvers(self):
         self.p.append("apply", "w9", {"offer": offer()}, T0 + 10)
         e = self.p.append("admit", "orch", {"applicant": "w9"}, T0 + 11)
-        self.assertIn("for humans and approvers", self.p.state().ignored[e.id])
+        self.assertIn("level-0 decision", self.p.state().ignored[e.id])
         (self.p.home / "policy.toml").write_text(POLICY.replace('approvers = []', 'approvers = ["orch"]'), encoding="utf-8")
         self.assertIn("w9", self.p.state().actors)   # the policy is folded over all events (a known gap: section 10)
 

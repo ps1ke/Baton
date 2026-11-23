@@ -30,7 +30,7 @@ class UiTests(unittest.TestCase):
         self.s.init()
         (self.s.home / "policy.toml").write_text(POLICY, encoding="utf-8")
         a = self.s.append
-        a("project", "human:ana", {"name": "toy", "summary": "<b>not bold</b>", "join": "open",
+        a("project", "human:ana", {"name": "toy", "repo": "https://example.org/toy.git", "summary": "<b>not bold</b>", "join": "open",
                                    "needs": [{"tier": "standard", "skills": ["python"]}]}, T0)
         a("join", "o", {"offer": offer(FABLE)}, T0 + 2)
         a("join", "w1", {"offer": offer(SONNET)}, T0 + 3)
@@ -47,8 +47,7 @@ class UiTests(unittest.TestCase):
         other = Store(root / "other")
         other.init()
         (other.home / "policy.toml").write_text(POLICY, encoding="utf-8")
-        other.append("project", "human:bo", {"name": "other"}, T0)   # ignored: bo is not a human there
-        other.append("project", "human:ana", {"name": "other", "tags": ["c"]}, T0 + 1)
+        other.append("project", "human:ana", {"name": "other", "repo": "https://example.org/toy.git", "tags": ["c"]}, T0 + 1)
         self.other = manifest_of(other)
         cat = root / "cat.json"
         publish(cat, self.other)

@@ -213,6 +213,13 @@ def _package_from_args(a, s, store) -> dict:
         body["parent"] = store.resolve(parent, s.tasks)
     if a.depends_on:
         body["depends_on"] = [store.resolve(d, s.tasks) for d in a.depends_on]
+    if a.base:
+        body["base"] = a.base
+    elif not parent:
+        import subprocess
+        r = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True)
+        if r.returncode == 0 and len(r.stdout.strip()) in (40, 64):
+            body["base"] = r.stdout.strip()   # a root package starts from the commit you are on
     return body
 
 
@@ -300,6 +307,11 @@ def cmd_done(a):
     s = store.state()
     body = {"task": store.resolve(a.task_id, s.tasks), "outcome": a.outcome, "summary": a.summary or ""}
     report = _report_from_args(a)
+    wt, base = os.environ.get("BATON_WORKTREE"), os.environ.get("BATON_BASE")
+    task = s.tasks[body["task"]]
+    if wt and base and a.outcome == "done" and task.kind in ("implement", "orchestrate"):
+        from . import codeflow   # the change itself travels with the report, as a patch
+        report = {**codeflow.capture(store, task, Path(wt), base), **report}
     if report:
         body["report"] = report
     return _emit(a, "done", body)
@@ -369,9 +381,14 @@ def cmd_swarm(a):
             sys.exit(f"baton: could not join: {store.state().ignored[e.id]}")
         print(f"{me} joined")
     logs = Path(a.transcripts) if a.transcripts else store.home / "runs"
+    p2p_cfg = None
+    if a.p2p:
+        p2p_cfg = {"listen": a.p2p, "advertise": a.advertise or a.p2p, "every": pol.duration(a.p2p_every),
+                   "peers": dict(x.split("=", 1) for x in (a.peer or []))}
     sw = swarm.Swarm(store, me, cfg, p, max_runs=a.max_runs, timeout=pol.duration(a.timeout) if a.timeout else None,
                      once=a.once, interval=pol.duration(a.interval), sync_every=pol.duration(a.sync) if a.sync else None,
-                     transcripts=logs, log=lambda line: print(time.strftime("%H:%M:%S ") + line, flush=True))
+                     transcripts=logs, log=lambda line: print(time.strftime("%H:%M:%S ") + line, flush=True),
+                     ws=ws, p2p=p2p_cfg)
     results = swarm.serve(sw)
     print(f"swarm: {len(results)} run(s); transcripts in {logs}")
     return 0
@@ -457,8 +474,18 @@ def cmd_execute(a):
         print(f"would run {p.action} on {p.target} for {p.actor}:\n{json.dumps(p.payload, indent=1)}\n"
               "(pass --yes to run it)")
         return 0
-    result = forge.execute(p.action, p.target, p.payload)
+    result = execute_action(store, p)
     return _emit(a, "executed", {"proposal": pid, "result": result})
+
+
+def execute_action(store, p) -> dict:
+    if p.action == "push":
+        from . import codeflow
+        repo = codeflow.checkout(_ws(), store)
+        if repo is None:
+            raise ValueError("this log has no repository to push to")
+        return codeflow.push(store, repo, p.payload)
+    return forge.execute(p.action, p.target, p.payload)
 
 
 def cmd_status(a):
@@ -484,6 +511,112 @@ def cmd_status(a):
         if a.all or p.status in ("pending", "approved"):
             print(f"  {p.id[:12]} {p.status:12} {p.action} {p.target} by {p.actor}" + (f" ({p.reason})" if p.reason else ""))
     return 0
+
+
+def _node(a, store=None):
+    from . import p2p
+    ws = _ws()
+    return p2p.Node(store or _store(a), _actor(a), ws.dir / "tls")
+
+
+def cmd_peer(a):
+    """Run this machine's peer node for the log (`serve`), or exchange once with one node (`sync`)."""
+    from . import p2p
+    import threading
+    store = _store(a)
+    node = _node(a, store)
+    node.log = lambda line: print(time.strftime("%H:%M:%S ") + line, flush=True)
+    if a.action == "sync":
+        addr, _, fp = a.target.partition("=")
+        print(json.dumps(node.sync_with(addr, fp)))
+        return 0
+    if a.action == "id":
+        print(json.dumps({"actor": node.actor, "key": store.keyring.public(node.actor),
+                          "key_fingerprint": __import__("baton.crypto", fromlist=["x"]).fingerprint(store.keyring.public(node.actor)),
+                          "cert": node.fp}, indent=1))
+        return 0
+    host, _, port = a.listen.rpartition(":")
+    real = node.serve(host, int(port))
+    node.addr = a.advertise
+    for x in a.peer or []:
+        addr, _, fp = x.partition("=")
+        node.extra[addr] = fp
+    print(f"peer node for {store.home} as {node.actor} on {host}:{real}; certificate {node.fp}", flush=True)
+    stop = threading.Event()
+    try:
+        node.run(pol.duration(a.every), stop)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.stop()
+    return 0
+
+
+def cmd_invite(a):
+    from . import p2p
+    store = _store(a)
+    s = store.state()
+    if not s.project_id:
+        sys.exit("baton: only a project (with a genesis) can invite")
+    me = s.actors.get(_actor(a))
+    if not me or not me.level0:
+        sys.exit("baton: invites come from the author or a steward (level 0)")
+    node = _node(a, store)
+    token = node.invites.new(s.project_id, pol.duration(a.ttl))
+    print(p2p.invite_url(a.addr, s.project_id, node.fp, token))
+    return 0
+
+
+def cmd_connect(a):
+    """Use an invite: fetch the project's public card from the inviter, apply with this machine, deliver it."""
+    from . import p2p
+    from . import machine as mc
+    inv = p2p.parse_invite(a.invite)
+    ws = _ws()
+    home = ws.dir / "projects" / inv["project"][:16]
+    store = Store(home)
+    store.init()
+    node = _node(a, store)
+    r = node.sync_with(inv["addr"], inv["cert"], token=inv["token"], project=inv["project"])
+    s = store.state()
+    if s.project_id != inv["project"]:
+        sys.exit("baton: the inviter sent another project's card; not applying")
+    ws.add_project(s.project_id, home, trusted=False)
+    me = _actor(a)
+    if r["access"] == "full":
+        print(f"{me} is already a member; log at {home}")
+        return 0
+    o = mc.offer(_probe(a), ws.machine(), s.policy.presence_ttl)
+    if not o["models"]:
+        sys.exit("baton: this machine offers no model yet: `baton machine allow <provider:model>`")
+    kind = "join" if s.join_mode == "open" else "apply"
+    store.append(kind, me, {"offer": o, **({"note": a.note} if a.note and kind == "apply" else {})})
+    node.sync_with(inv["addr"], inv["cert"], token=inv["token"], project=inv["project"])
+    print(f"{'joined' if kind == 'join' else 'applied to'} {s.project.get('name')} as {me}; log at {home}\n"
+          f"next: baton --home {home} swarm --p2p 0.0.0.0:7420 --advertise <your address>:7420 "
+          f"--peer {inv['addr']}={inv['cert']}")
+    return 0
+
+
+def cmd_grant(a):
+    s = _store(a).state()
+    key = a.key
+    if not key:
+        target = s.actors.get(a.to)
+        key = target.key if target else ""
+    if not key:
+        sys.exit("baton: name the key to bind (`baton peer id` on that machine prints it), or grant a member who joined")
+    return _emit(a, "grant", {"to": a.to, "key": key, "right": a.right})
+
+
+def cmd_revoke(a):
+    return _emit(a, "revoke", {"actor": a.target, **({"reason": a.reason} if a.reason else {})})
+
+
+def cmd_policy_publish(a):
+    text = (_store(a).home / "policy.toml").read_text(encoding="utf-8")
+    pol.parse(text)
+    return _emit(a, "policy", {"toml": text})
 
 
 def cmd_whoami(a):
@@ -780,6 +913,7 @@ def main(argv=None) -> int:
     p.add_argument("--deliverable", action="append"); p.add_argument("--constraint", action="append"); p.add_argument("--input", action="append")
     p.add_argument("--size", choices=("S", "M", "L", "XL")); p.add_argument("--tier", choices=pol.TIERS)
     p.add_argument("--hardware", action="append"); p.add_argument("--parent"); p.add_argument("--depends-on", action="append")
+    p.add_argument("--base", help="the commit it starts from (default for a root package: HEAD here)")
     p.set_defaults(fn=cmd_task)
     p = sub.add_parser("tasks", help="the package tree"); p.add_argument("--all", action="store_true"); p.set_defaults(fn=cmd_tasks)
     p = sub.add_parser("show", help="one package, with its runs and report"); p.add_argument("task_id"); p.set_defaults(fn=cmd_show)
@@ -800,6 +934,10 @@ def main(argv=None) -> int:
     p.add_argument("--sync", help="sync with the git remote this often, e.g. 15s")
     p.add_argument("--once", action="store_true", help="stop when nothing is left for this machine")
     p.add_argument("--transcripts", help="where agent output is kept (default: <home>/runs)")
+    p.add_argument("--p2p", metavar="HOST:PORT", help="run a peer node listening here, e.g. 0.0.0.0:7420")
+    p.add_argument("--advertise", metavar="HOST:PORT", help="the address other machines use to reach it")
+    p.add_argument("--peer", action="append", metavar="HOST:PORT=CERT", help="a node to reach before offers name any")
+    p.add_argument("--p2p-every", default="5s", help="how often to exchange with every peer")
     p.set_defaults(fn=cmd_swarm)
 
     p = sub.add_parser("claim"); p.add_argument("task", nargs="?"); p.add_argument("--task-id"); p.add_argument("--model")
@@ -820,6 +958,22 @@ def main(argv=None) -> int:
     p.set_defaults(fn=cmd_execute)
     p = sub.add_parser("status"); p.add_argument("--all", action="store_true"); p.set_defaults(fn=cmd_status)
     sub.add_parser("whoami").set_defaults(fn=cmd_whoami)
+    p = sub.add_parser("peer", help="this machine's peer node: serve, sync once, or show its identity")
+    p.add_argument("action", choices=("serve", "sync", "id")); p.add_argument("target", nargs="?", help="sync: HOST:PORT=CERT")
+    p.add_argument("--listen", default="0.0.0.0:7420"); p.add_argument("--advertise")
+    p.add_argument("--peer", action="append", metavar="HOST:PORT=CERT"); p.add_argument("--every", default="5s")
+    p.set_defaults(fn=cmd_peer)
+    p = sub.add_parser("invite", help="an invite for one machine to apply (author and stewards)")
+    p.add_argument("addr", help="the address your node is reachable at, HOST:PORT"); p.add_argument("--ttl", default="1d")
+    p.set_defaults(fn=cmd_invite)
+    p = sub.add_parser("connect", help="use an invite: fetch the project's card and apply with this machine")
+    p.add_argument("invite"); p.add_argument("--note"); p.set_defaults(fn=cmd_connect)
+    p = sub.add_parser("grant", help="the author makes a machine or a human a steward (level 0)")
+    p.add_argument("to"); p.add_argument("--key", help="its public key (default: the key it joined with)")
+    p.add_argument("--right", choices=("steward", "member"), default="steward"); p.set_defaults(fn=cmd_grant)
+    p = sub.add_parser("revoke", help="remove an actor (stewards remove members; the author removes anyone)")
+    p.add_argument("target"); p.add_argument("--reason"); p.set_defaults(fn=cmd_revoke)
+    sub.add_parser("policy", help="publish policy.toml into the log (author only)").set_defaults(fn=cmd_policy_publish)
 
     p = sub.add_parser("message", help="talk in the log: a package thread, one member, or a reply")
     p.add_argument("text", help='the message, or "-" to read it from stdin')

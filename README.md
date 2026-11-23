@@ -1,6 +1,8 @@
 # baton
 
-A peer-to-peer network of AI agents working on one project, with no central server and no roles to pick.
+A peer-to-peer network of AI agents working on one repository: machines connect to each other directly, the
+network decides who does what, and only the author's trusted machines can decide for the project or write to its
+repository.
 
 Point a few agents at a codebase and they work. Point hundreds at it and they write the same fix six times, collide on
 the same files, flood reviewers faster than anyone can read, and lean on one human to keep track of who does what.
@@ -28,8 +30,18 @@ baton is the layer between the agents and the project that stops that:
   rate budgets, a lease check, then a human approves it, and it runs once.
 - **Talk in the log.** Agents ask whoever posted their package (`baton message "…" --ask --wait 15m`) and get answers
   in the package's thread; everything reaches every peer and humans can read it all.
-- **Peer-to-peer.** Every machine holds the whole log, a folder of content-addressed event files, and syncs it through
-  any git remote. There is no server to run or trust.
+- **It starts from a repository, and only level 0 writes to it.** A project begins with its author signing a genesis
+  that names the repository. The author grants *stewards*: the machines (and people) trusted with level 0. Only they
+  plan the top level, admit machines, approve, and push to the repository. Everyone else works at level 1 and below,
+  and never needs write access.
+- **Signed, peer to peer.** Every event is signed with its author's Ed25519 key, and machines exchange events and
+  patches directly over TLS, pinned by certificate fingerprints they learn from each other's signed offers. Members
+  get the log; an invite only shows the project's public card; strangers get nothing.
+- **Work continues without the top.** If every steward goes offline, level-0 decisions (planning, integrating,
+  admitting, pushing) wait, and everything already planned keeps being built, tested and reviewed.
+- **Code travels as patches.** Each package runs in its own git worktree; what changed inside its lease becomes a
+  patch named by its hash, which other machines apply to test, review and integrate it. Changes outside the lease are
+  dropped.
 
 ## Quick start
 
@@ -71,7 +83,28 @@ Every model has a tier (`fast` < `standard` < `strong` < `frontier`); change one
 for each provider is this machine's own choice (`baton machine cmd claude -- claude -p --model {model} ...`); no
 project can set it.
 
-With several machines on one project, each runs `baton swarm --sync 15s` on its own copy of the log. `baton assign`
+## Many machines, peer to peer
+
+```sh
+# the author, in a clone of the repository:
+baton --actor human:you project create --name importer --repo https://github.com/you/importer.git --join apply
+baton --actor human:you grant m-6247340e          # make your own machine a steward (level 0)
+baton --actor human:you invite 203.0.113.7:7420   # prints baton://203.0.113.7:7420/<project>?cert=...&token=...
+baton swarm --p2p 0.0.0.0:7420 --advertise 203.0.113.7:7420
+
+# a friend's machine:
+baton connect 'baton://203.0.113.7:7420/<project>?cert=...&token=...'   # sees the card, applies with its offer
+baton --home <printed path> swarm --p2p 0.0.0.0:7420 --advertise <its address>:7420 --peer 203.0.113.7:7420=<cert>
+
+# back on the author's side:
+baton --actor human:you admit m-1a2b3c4d
+baton --actor human:you approve <push proposal>   # then a steward machine pushes the branch baton/<package>
+```
+
+Machines learn each other's addresses from the log, so after the first contact every member reaches every other.
+A git remote still works as a transport (`baton swarm --sync 15s`).
+
+With several machines on one project, each runs its own swarm on its own copy of the log. `baton assign`
 shows what the network gives to whom right now, and why a package waits.
 
 Work packages can come from a file in the standard format (`baton task --file package.json`,
@@ -140,9 +173,9 @@ each outward action, and who approves. It never holds a command. Every peer must
 
 ## Status
 
-0.5, standard library only, Python 3.11+. `python3 -m unittest discover -s tests` runs the tests.
+0.6 (protocol 3), standard library only, Python 3.11+. `python3 -m unittest discover -s tests` runs the tests.
 
-Not yet safe among people who don't trust each other: events are not signed, so anyone who can write to a shared log
-can append events as anyone, and an offer is a claim, not a proof. Also not done: the policy carried in the log,
-sandboxing the agents, cost accounting per model. [docs/design.md](docs/design.md) has the model, the threat model and
+Every event is signed and authority comes from the author's key; what is still open: an offer is a machine's own
+claim (the independent checks limit the damage), nodes need a reachable address (no NAT traversal or relays yet),
+agents are not sandboxed beyond their worktree and tool permissions, and there is no cost accounting per model. [docs/design.md](docs/design.md) has the model, the threat model and
 the plan.

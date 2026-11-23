@@ -1,4 +1,4 @@
-# The baton protocol, version 2
+# The baton protocol, version 3
 
 Status: draft. This document defines the data formats and rules that let any number of agents and humans, on any
 number of machines, find projects, join them and work on them together without a central server. `baton` (this
@@ -39,12 +39,15 @@ An event is a JSON object (schema: [`schemas/event.schema.json`](schemas/event.s
  "ts": 1795000000.5,
  "parents": ["<id>", "<id>"],
  "body": {"task_id": "<id>"},
- "id": "<sha256 of the canonical form of the six fields above>"
+ "key": "<the author's Ed25519 public key, 64 hex>",
+ "id": "<sha256 of the canonical form of the seven fields above>",
+ "sig": "<Ed25519 signature, by key, of the bytes 'baton-event-v3:' + id>"
 }
 ```
 
-- `id` MUST equal the SHA-256 of the canonical form of the object without `id`. A peer MUST reject an event whose id
-  does not match.
+- `id` MUST equal the SHA-256 of the canonical form of the object without `id` and `sig`. `sig` MUST be a valid
+  Ed25519 signature by `key` of `baton-event-v3:` followed by the id (ASCII). A peer MUST reject an event whose id or
+  signature does not check, whatever channel brought it.
 - `parents` are the ids of the events the author had seen and that no other seen event names as a parent (its
   *heads*), sorted. `lamport` MUST be greater than every parent's `lamport`.
 - `ts` is the author's clock in seconds since the Unix epoch. It is advisory (section 5).
@@ -59,31 +62,48 @@ Every peer computes the same state by folding the admitted events in **ascending
 rules. An event that breaks a rule is kept in the log but has no effect ("ignored", with a reason). A claim that is
 refused is "denied". *Effective time* is defined in section 5.
 
-There are two kinds of actors. **Humans** are listed in the policy (`gate.humans`) and may do everything.
-**Members** are machines: they join with an *offer* of what they can run, and they never choose a role. The network
-(section 4.3) decides which work package each member does, with which model. `gate.approvers` lists members that may
-also approve, execute, admit and change the project.
+**Authority comes from keys.** Every actor is bound to one public key, and an event counts only if it is signed by its
+actor's key (otherwise it is ignored: "signed by a key that is not X's"):
+
+- The **author** is whoever signs the genesis (the first `project` event, which MUST name the project's `repo`): a
+  project always starts from a repository. The author holds every right, alone grants and revokes stewards, and alone
+  sets the policy (`policy` events).
+- **Stewards** are the actors the author `grant`s: machines that run the top level, or humans who decide. Together
+  with the author they are **level 0**: they post root packages, plan and integrate the top level (4.3), admit and
+  decline, approve, reject and execute proposals, change the project, and alone may propose and execute a `push` to
+  the repository.
+- **Members** are machines bound to the key they joined or applied with. They choose no role: the network (4.3)
+  decides which package each does with which model, at levels 1 and deeper, and in root packages that are not
+  orchestration. They cannot make level-0 decisions.
+- A log without a genesis is **private**: the humans listed in the local policy (`gate.humans`) decide, each bound to
+  the first key it signs with.
+
+When no steward is present, the level-0 packages wait and every other package goes on; decisions and pushes resume
+when a steward returns. A revoked actor's later events are ignored and its leases end at once.
 
 | kind | body | who | effect |
 |---|---|---|---|
-| `project` | any of the manifest fields (section 6); `null` removes a field | humans, approvers | the first one is the **genesis** (MUST have `name`); its id is the project id. Later ones update fields. |
+| `project` | any of the manifest fields (section 6); `null` removes a field | the genesis: anyone (who becomes the author); later: level 0 | the genesis MUST have `name` and `repo`; its id is the project id. Later ones update fields. |
+| `grant` | `to`, `key`, `right` (`steward` or `member`) | the author | binds `to` to `key` with that right (also a key rotation) |
+| `revoke` | `actor`, optional `reason` | the author (anyone but itself); stewards (members only) | the actor's later events are ignored; its leases end |
+| `policy` | `toml` (the policy file's text, ≤ 20000 chars) | the author | the policy in force from this event on |
 | `join` | optional `offer` | anyone not yet a member, only while `join` is `open` | makes the actor a member; with an offer, it is present from now |
 | `apply` | `offer`, `note` (≤ 2000 chars) | a non-member, unless `join` is `closed` | a pending application; one pending per actor |
-| `admit` / `decline` | `applicant`, optional `reason` | humans, approvers | makes the applicant a member (its offer counts from now) / closes the application |
+| `admit` / `decline` | `applicant`, optional `reason` | level 0 | makes the applicant a member (its offer counts from now) / closes the application |
 | `offer` | an offer (4.1) | members | replaces the member's offer and marks it present for `min(ttl, presence_ttl)` |
-| `task` | a work package (4.2) | humans and approvers anywhere; members only as children of an orchestrate package they hold | adds a package to the tree |
+| `task` | a work package (4.2) | level 0 anywhere; members only as children of an orchestrate package they hold | adds a package to the tree |
 | `claim` | `task_id` and `model`, or `task` + `paths`/`topics`; optional `ttl` (seconds) | members (present), humans | grants a lease, or denies it (4.3) |
 | `renew` | `lease` | the holder, while the lease is active | moves the expiry to effective time + ttl |
-| `release` | `lease` | the holder, humans, approvers | ends the lease |
+| `release` | `lease` | the holder, level 0 | ends the lease |
 | `done` | `task`, `outcome` (`done` `split` `failed` `escalated`), `summary`, `report` (4.2), `evidence` | the holder of the package's lease | reports the package (4.4) and releases the lease |
 | `message` | `text` (1–4000 chars), optional `task`, `to` (a member), `reply_to`, `ask` (bool) | any member or human | adds a message to the conversation (4.5); changes nothing else |
 | `propose` | `action`, `target`, `payload` (object; `paths` in it are checked against leases) | any member or human | creates a proposal and decides its first status (4.6) |
-| `approve` / `reject` | `proposal`, optional `reason` | humans, approvers; never the proposal's author | |
-| `executed` | `proposal`, `result` | humans, approvers | marks an approved proposal done; only once |
+| `approve` / `reject` | `proposal`, optional `reason` | level 0; never the proposal's author | |
+| `executed` | `proposal`, `result` | level 0 | marks an approved proposal done; only once |
 
 **Join mode**: `open` (anyone may `join`), `apply` (members come in through `apply` + `admit`; the default once a
 project exists), `closed` (no new members). A log with no `project` event behaves as `open`. Names starting with
-`human:` are reserved for the humans of the policy.
+`human:` cannot join or apply; humans come from the genesis and from grants.
 
 **Paths** are repository-relative, `/`-separated, with no `..`; `""` is the whole tree. Path `a` *covers* `b` when they
 are equal or `b` starts with `a/`. Two scopes *overlap* when either covers the other. Topics overlap when equal.
@@ -136,6 +156,8 @@ text, path, line}]`), `verdict` (`passed` or `changes_requested`, for reviews) a
 At any time *t* the network's **assignment** gives every open package at most one present member and one model. Every
 peer computes it from the state alone:
 
+0. In a project, an `orchestrate` package at level 0 goes only to a level-0 member (a steward machine). While none is
+   present it waits; nothing else waits for it.
 1. Packages are taken in this order: `review` and `test`, then `orchestrate`, then `investigate`, then `implement`;
    within a kind by level, then age, then id.
 2. The tier sought is the package's tier while any present member that has the package's hardware tags offers a model
@@ -189,11 +211,22 @@ approve or perform anything, and their text is untrusted (section 10).
 
 ### 4.6 Proposals
 
-First status in this order: `unknown_action` (no budget for the action in the policy); `duplicate` (an identical
+First status in this order: `unknown_action` (no budget for the action in the policy); `not_level0` (a `push` from
+an actor that is not level 0); `duplicate` (an identical
 `action`+`target`+`payload` is pending, approved or executed); `over_budget` (the actor's, or everyone's, count of
 pending/approved/executed proposals of this action in the window ending now reached the limit); `unleased` (it names
 paths the actor holds no active lease covering, or the action `needs_lease` and names none); `approved` (the policy's
-`gate.auto` lists the actor for this action); else `pending`.
+`gate.auto` lists the actor for this action, or lists `stewards` and the actor is level 0); else `pending`.
+
+### 4.7 Code
+
+Every package runs in a fresh worktree of the project's repository at its `base` commit (a root package names it;
+children, tests and reviews inherit it), with its inputs applied: an implementer's finished dependencies, the change a
+test or review checks, or every child an integration combines. What the agent changed inside the package's paths
+becomes a **patch**: a blob named by its SHA-256, referenced by the report (`patch`, `base`), carried peer to peer like
+events; changes outside the paths are dropped and listed in `outside`. When a root package is done, a steward proposes
+`push {branch: "baton/<12 characters of its id>", base, patch, package, title}`; once approved, a level-0 machine
+applies the patch on its base, commits and pushes that branch. Members never need write access to the repository.
 
 ## 5. Time
 
@@ -214,7 +247,7 @@ It is not written by hand: a peer computes it from the log (the genesis id and t
 
 ```json
 {
- "baton": "2",
+ "baton": "3",
  "id": "<genesis event id>",
  "name": "toy",
  "summary": "One line, at most 280 characters.",
@@ -278,15 +311,27 @@ A catalog is a JSON document anyone can publish at any URL or path (schema:
 
 ## 9. Transport
 
-The protocol needs only a way to copy event files. baton uses git: a peer commits new files, pulls (a union; event
-files never conflict, so unrelated histories merge too) and pushes. Any other channel that delivers the files
-unchanged works, because each file proves its own content.
+The protocol needs only a way to copy event files and blobs; each proves its own content (events by id and
+signature, blobs by hash). baton connects machines directly:
 
-Peers SHOULD sync continuously while agents work (baton: `baton sync --every 15s`, `baton ui --sync 15s`, or a
-running `baton swarm`), since a lease or a message only reaches other machines when the files do. A peer that may
-not push still pulls, and delivers its own events another way (section 8). A peer SHOULD back off from a remote that
-fails, and MUST NOT write partial files where the transport can pick them up (baton writes `events/.tmp-*` and
-renames; `events/.gitignore` excludes them).
+- Every machine that takes part runs a **node** listening on TCP, with a self-signed TLS certificate. Other nodes pin
+  it by the SHA-256 fingerprint of its DER encoding, learnt from the member's signed offer (`peer: {addr, cert}`), from
+  an invite, or given by hand. There is no certificate authority and no server.
+- After TLS, the client sends `hello {v: 3, actor, key, nonce, project, token}`; the server answers `challenge
+  {nonce}`; the client signs `baton-p2p-v3|` + that nonce + `|` + the server's certificate fingerprint (binding the
+  proof to this TLS session) and sends `auth {sig}`; the server signs `baton-p2p-v3|server|` + the client's nonce +
+  `|` + the client's key and sends `welcome {access, actor, key, sig}`.
+- **Access**, from the server's own state: a key bound to an actor that is not revoked gets `full` access; the holder
+  of a valid invite token, or anyone when the project's join mode is `open`, gets `applicant` access (it sees only
+  `project` and `policy` events, and only its own `apply` or `join` is accepted from it); anyone else is refused.
+- Then each side sends the ids of what it holds (`have {events, blobs}`), and each sends what the other lacks (`data`).
+  Messages are JSON, each prefixed by its length as 4 bytes, big-endian. Every received event and blob is checked
+  before it is written.
+- An invite is `baton://<host:port>/<project id>?cert=<fingerprint>&token=<token>`; only level 0 issues them, and
+  the issuing node keeps only a hash of each token, with an expiry.
+
+Peers SHOULD exchange with every known node every few seconds while agents work. A git remote (commit, pull, push)
+remains a valid transport for the same files.
 
 ## 10. Security requirements
 
@@ -300,15 +345,22 @@ renames; `events/.gitignore` excludes them).
   escaped when displayed and SHOULD be presented to agents as data, not instructions.
 - A peer MUST NOT act outside the machine (post, push code, send anything outside the log) for an agent except through an approved
   proposal.
-- Version 1 does not authenticate actors: anyone who can write to a log can append events under any name. Peers
-  SHOULD only share writable logs among parties they trust. Version 2 is planned to add per-actor keys in the policy
-  and signed events, folding only events whose signature verifies.
+- Every event is signed and every actor bound to one key, so no peer can write as another, and a relay cannot alter
+  what it carries. Level-0 rights (top-level decisions, admissions, approvals, pushes) come only from the author's
+  key, through grants. A machine's private keys never leave it.
+- Peers connect only to pinned certificates, and give the log only to members. Members cannot write to the
+  repository: only a level-0 machine pushes, and only branches named `baton/...`, after approval.
+- Known limits: an offer is a machine's own claim (the pipeline's independent checks bound the damage); a member can
+  fill its own copy of a log with valid but useless signed events (peers SHOULD cap what they accept per exchange);
+  the author's key is the root of trust and SHOULD be kept offline from the machines that run agents.
 
 ## 11. Versioning
 
 `baton` in manifests and `baton_catalog` in catalogs carry the version of their format. Version 2 replaced version 1's
 roles (members chose `planner`/`orchestrator`/`worker` and joined under a parent) with offers and assignment by the
-network, made `task` bodies work packages, and added the pipeline, `offer` and questions; a version 1 log does not
-fold under version 2 rules. A reader MUST ignore manifest
+network, made `task` bodies work packages, and added the pipeline, `offer` and questions. Version 3 signs every
+event, takes authority from the author's key (`grant`, `revoke`, `policy`), restricts level 0 to stewards, requires a
+repository, adds patches and `push`, and defines the peer-to-peer transport. Logs of earlier versions do not fold
+under version 3 rules. A reader MUST ignore manifest
 fields it does not know only if the version is one it supports; it MUST NOT fold events of an unknown `kind` (they
 are kept, so a newer peer can fold them).

@@ -64,7 +64,7 @@ def check_package(b: dict) -> list[str]:
     if not isinstance(b, dict):
         return ["a work package must be an object"]
     known = {"title", "kind", "goal", "context", "detail", "paths", "topics", "acceptance", "deliverables",
-             "constraints", "size", "needs", "parent", "depends_on", "inputs"}
+             "constraints", "size", "needs", "parent", "depends_on", "inputs", "base"}
     extra = set(b) - known
     if extra:
         errors.append(f"unknown work package fields: {', '.join(sorted(extra))}")
@@ -100,6 +100,8 @@ def check_package(b: dict) -> list[str]:
             if needs.get("tier") is not None and needs["tier"] not in TIERS:
                 errors.append(f"needs.tier must be one of {', '.join(TIERS)}")
             _list(errors, "needs.hardware", needs.get("hardware"), 10, 40)
+    if b.get("base") is not None and not (isinstance(b["base"], str) and re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", b["base"])):
+        errors.append("base must be a full commit id")
     if b.get("parent") is not None and not (isinstance(b["parent"], str) and _ID.fullmatch(b["parent"])):
         errors.append("parent must be a package id")
     deps = b.get("depends_on")
@@ -115,7 +117,7 @@ def check_report(r) -> list[str]:
         return ["a report must be an object"]
     if len(ev.canonical(r)) > 32000:
         return ["a report must be at most 32000 bytes"]
-    extra = set(r) - {"changes", "verification", "findings", "verdict", "notes"}
+    extra = set(r) - {"changes", "verification", "findings", "verdict", "notes", "patch", "base", "outside"}
     if extra:
         errors.append(f"unknown report fields: {', '.join(sorted(extra))}")
     ch = r.get("changes")
@@ -140,6 +142,9 @@ def check_report(r) -> list[str]:
     if r.get("verdict") is not None and r["verdict"] not in VERDICTS:
         errors.append(f"verdict must be one of {', '.join(VERDICTS)}")
     _text(errors, "notes", r.get("notes"), 4000)
+    if r.get("patch") is not None and not (isinstance(r["patch"], str) and _ID.fullmatch(r["patch"])):
+        errors.append("patch must be the SHA-256 of a blob")
+    _list(errors, "outside", r.get("outside"), 200)
     return errors
 
 

@@ -25,9 +25,18 @@ from . import state as st
 
 
 class Store:
-    def __init__(self, home):
+    def __init__(self, home, keyring=None):
         self.home = Path(home)
         self.dir = self.home / "events"
+        self.blobs = self.home / "blobs"
+        self._keyring = keyring
+
+    @property
+    def keyring(self):
+        if self._keyring is None:
+            from .crypto import default_keyring
+            self._keyring = default_keyring()
+        return self._keyring
 
     def init(self):
         self.dir.mkdir(parents=True, exist_ok=True)
@@ -63,13 +72,37 @@ class Store:
         ordered, _, _ = self.load()
         return st.fold(ordered, self.policy())
 
+    # -- blobs: content-addressed files (patches) that events refer to by SHA-256 ------------------------------------
+    def put_blob(self, data: bytes) -> str:
+        import hashlib
+        h = hashlib.sha256(data).hexdigest()
+        self.blobs.mkdir(parents=True, exist_ok=True)
+        target = self.blobs / h
+        if not target.exists():
+            fd, tmp = tempfile.mkstemp(dir=self.blobs, prefix=".tmp-")
+            with os.fdopen(fd, "wb") as f:
+                f.write(data)
+            os.replace(tmp, target)
+        return h
+
+    def blob(self, h: str) -> bytes | None:
+        import hashlib
+        f = self.blobs / h
+        if not f.is_file():
+            return None
+        data = f.read_bytes()
+        return data if hashlib.sha256(data).hexdigest() == h else None
+
+    def blob_ids(self) -> list[str]:
+        return sorted(p.name for p in self.blobs.glob("*") if len(p.name) == 64) if self.blobs.is_dir() else []
+
     def append(self, kind: str, actor: str, body: dict, now: float | None = None) -> ev.Event:
         found, _ = self.read()
         ordered, _ = st.causal(found)
         referenced = {p for e in ordered for p in e.parents}
         heads = [e.id for e in ordered if e.id not in referenced]
         lamport = max((e.lamport for e in found.values()), default=0) + 1
-        e = ev.make(kind, actor, body, heads, lamport, time.time() if now is None else now)
+        e = ev.make(kind, actor, body, heads, lamport, time.time() if now is None else now, self.keyring)
         self.write(e)
         return e
 

@@ -107,6 +107,8 @@ investigate = "fast"
 [pipeline]
 implement = ["test", "review"]
 
+# In a project, authority comes from keys: the author (who signed the genesis) and the stewards it grants. `humans`
+# only matters in a private log with no project.
 [gate]
 humans = []
 approvers = []
@@ -123,6 +125,12 @@ total = "20/1h"
 per_actor = "1/4h"
 total = "5/4h"
 needs_lease = true
+
+# Pushing integrated work to the project's repository: only the author and its stewards (level 0) may propose it,
+# and the author or a human steward approves it, unless `[gate] auto = {push = ["stewards"]}` lets stewards decide.
+[budgets.push]
+per_actor = "2/1h"
+total = "4/1h"
 """
 
 

@@ -35,6 +35,12 @@ class Pick:
     family: str
 
 
+def level0_only(state, p) -> bool:
+    """In a project, the top level's decisions (planning and integrating the root) are for stewards alone. While no
+    steward is present those packages wait, and the rest of the work goes on."""
+    return state.mode == "project" and p.kind == "orchestrate" and p.level == 0
+
+
 def need(p, policy: Policy, t: float) -> str:
     """The tier a package needs at time t. A package nobody can take is not stuck forever: after `downgrade_after`
     it accepts one tier lower, and so on (deterministic, so every peer agrees)."""
@@ -81,7 +87,8 @@ def assign(state, policy: Policy, t: float) -> dict[str, Pick]:
     order = sorted(state.open_tasks(t), key=lambda p: (ORDER.get(p.kind, 9), p.level, p.created, p.id))
     for p in order:
         writer, family = author_of_change(state, p) if p.kind in ("review", "test") else (None, None)
-        fit = [a for a in members if set(p.hardware) <= set((a.offer.get("hardware") or {}).get("tags", []))]
+        fit = [a for a in members if set(p.hardware) <= set((a.offer.get("hardware") or {}).get("tags", []))
+               and (not level0_only(state, p) or a.level0)]
         # the package's own tier while any present member can serve it (even if busy now); lower ones only after
         # it waited (need()) and nobody present can serve the tier above
         want = p.tier
@@ -120,6 +127,8 @@ def why_not(state, policy: Policy, t: float, pkg_id: str, member: str) -> str:
         return f"{member} is not a member"
     if not a.present(t):
         return f"{member} is not present (no current offer: run `baton swarm` or `baton offer`)"
+    if level0_only(state, p) and not a.level0:
+        return "level-0 decisions are for the author's stewards; it waits for one to be present"
     if not set(p.hardware) <= set((a.offer.get("hardware") or {}).get("tags", [])):
         return f"it needs hardware {', '.join(p.hardware)}"
     if best_model(a.offer, need(p, policy, t)) is None:

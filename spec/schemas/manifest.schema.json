@@ -1,17 +1,17 @@
 {
  "$schema": "https://json-schema.org/draft/2020-12/schema",
- "$id": "https://baton.invalid/schemas/2/manifest.schema.json",
- "title": "baton project manifest (protocol 2)",
+ "$id": "https://baton.invalid/schemas/3/manifest.schema.json",
+ "title": "baton project manifest (protocol 3)",
  "type": "object",
  "required": ["baton", "id", "name"],
  "properties": {
-  "baton": {"const": "2"},
+  "baton": {"const": "3"},
   "id": {"type": "string", "pattern": "^[0-9a-f]{64}$", "description": "the genesis event id"},
   "name": {"type": "string", "minLength": 1, "maxLength": 120},
   "summary": {"type": "string", "minLength": 1, "maxLength": 280},
   "description": {"type": "string", "minLength": 1, "maxLength": 10000},
   "homepage": {"$ref": "#/$defs/http"},
-  "repo": {"$ref": "#/$defs/http"},
+  "repo": {"type": "string", "maxLength": 500, "pattern": "^(https?://|ssh://|git@[\\w.-]+:|file://)\\S+$", "description": "the repository the project starts from; the genesis must name it"},
   "log": {"type": "object", "required": ["git"], "properties": {
     "git": {"$ref": "#/$defs/git"},
     "branch": {"type": "string", "pattern": "^[\\w./-]{1,100}$"}}},

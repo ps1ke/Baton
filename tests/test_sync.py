@@ -6,6 +6,7 @@ import threading
 import unittest
 from pathlib import Path
 
+import helpers  # noqa: F401  (a throwaway workspace)
 from baton import sync
 from baton.store import Store
 

@@ -609,7 +609,8 @@ function taskCard(t, byId) {
       t.scope.filter(x => !x.startsWith("task:") && !x.startsWith("check:")).map(x => el("span", {class: "chip"}, x || "(whole repo)"))),
     t.goal ? el("div", {class: "m clamp", title: t.goal}, "goal: " + t.goal) : null,
     t.status === "open" && s.assignment[t.id] ? el("div", {class: "m"}, "network: " + s.assignment[t.id].member + " with " + s.assignment[t.id].model) : null,
-    t.status === "open" && !s.assignment[t.id] ? el("div", {class: "m"}, "network: no present machine fits yet (" + t.tier + ")") : null,
+    t.status === "open" && !s.assignment[t.id] ? el("div", {class: "m"}, s.mode === "project" && t.kind === "orchestrate" && t.level === 0
+      ? "network: waiting for a level-0 steward" : "network: no present machine fits yet (" + t.tier + ")") : null,
     t.checks.length ? el("div", {class: "m"}, "checks ", t.checks.map(c => byId[c] ? pill(byId[c].status, byId[c].kind + " " + byId[c].status) : null)) : null,
     t.report && t.report.verification ? el("div", {class: "m"}, "verification ", pill(t.report.verification.status === "passed" ? "done" : t.report.verification.status === "failed" ? "failed" : "pending", t.report.verification.status)) : null,
     t.report && t.report.verdict ? el("div", {class: "m"}, "verdict ", pill(t.report.verdict === "passed" ? "done" : "failed", t.report.verdict.replace("_", " "))) : null,
@@ -696,6 +697,7 @@ function renderProject() {
     const o = m.offer || {}, slots = o.slots || 0;
     return el("div", {class: "agent", style: "display:block"},
       el("div", {}, el("span", {class: "dot" + (m.present ? " on" : "")}), el("b", {}, m.name), " ",
+        m.right === "steward" || m.right === "author" ? pill("done", "level 0") : null, m.revoked ? pill("failed", "revoked") : null, " ",
         el("span", {class: "note"}, m.present ? m.busy + " / " + slots + " slots busy" : m.last_seen ? "last seen " + ago(m.last_seen, s.now) + " ago" : "never offered")),
       slots ? el("div", {class: "bar"}, el("i", {style: "width:" + Math.min(100, 100 * m.busy / slots) + "%"})) : null,
       el("div", {}, (o.models || []).map(x => el("span", {class: "chip"}, x.id + " · " + x.tier)), ((o.hardware || {}).tags || []).map(x => el("span", {class: "chip"}, x))));

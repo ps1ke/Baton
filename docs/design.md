@@ -81,6 +81,36 @@ when all its children have ended it reopens and the network gives it out again, 
 results together, post more children, or close or escalate it. Splitting and integrating are separate runs, so an
 orchestrator does not hold a slot while its children work.
 
+### Trust: the author, stewards and members
+
+A project starts from a repository and an author: the genesis event names the repository and is signed by the
+author's key, which becomes the root of trust. The author `grant`s steward rights to keys it trusts (its own machines,
+co-maintainers). The author and the stewards are **level 0**: they alone plan and integrate the top level, admit
+machines, approve and execute proposals, and push to the repository. Members run everything below level 0 and the
+pipeline's checks; they cannot decide for the project and need no write access anywhere.
+
+Because every event is signed and every actor is bound to one key, nothing depends on trusting the transport or other
+peers: a member's copy of the log can be relayed by anyone, and a forged approval or a "steward" that the author never
+granted is simply ignored by every fold. If all stewards go offline, the network goes on with what was already
+planned; the top-level decisions, admissions and pushes wait for them. That is the point: losing level 0 loses
+direction, not work, and losing a member loses neither.
+
+### Peer to peer
+
+Machines run nodes and connect directly over TLS, each pinning the other's certificate by the fingerprint published
+in its signed offer, so discovery itself is authenticated by the log. A connection proves both keys with a challenge
+bound to the TLS certificate, then exchanges what each side lacks. Access follows trust: members get the log and the
+patches, an invite holder only the project's public card plus the right to deliver its application, strangers
+nothing. There is no server and no certificate authority; a git remote can still carry the same files.
+
+### Code as patches
+
+Each package runs in its own worktree at the package's base commit, with its inputs applied from patches: the change a
+test or review checks, an implementer's dependencies, an integration's children. The result is captured as a patch
+inside the package's paths, so the lease is enforced on the diff itself rather than trusted. Patches are blobs named
+by their hash and travel with the events. When a root package is done, a steward proposes a push of a `baton/...`
+branch; after approval a level-0 machine applies, commits and pushes it.
+
 ### The pipeline
 
 An implement package reported `done` is not done. The fold derives a test package from it (deterministic id, same
@@ -152,9 +182,8 @@ author. `baton execute` runs an approved proposal through the forge adapter (dry
 
 ## Threat model and known gaps
 
-- **Identity is not authenticated yet.** Anyone who can write to the shared git remote can append an event as any
-  actor. Next step: sign each event (SSH signatures, as git uses) with a per-actor key listed in the policy, and fold
-  only events whose signature verifies.
+- **Identity.** Every event is signed (Ed25519) and every actor bound to one key; authority flows only from the
+  author's key. The author's key is the single root: it should live on a machine that does not run agents.
 - **Forward-dated events.** A peer whose clock runs ahead can make its leases look longer-lived. Mitigation planned:
   refuse to fold events more than a configured skew ahead of the local clock until that time arrives.
 - **Prompt injection through work items.** Pull request bodies, issues and code are data. Workers should run with no
@@ -164,12 +193,13 @@ author. `baton execute` runs an approved proposal through the forge adapter (dry
 - **Offers are claims.** A machine can offer a model it will not really use, or hardware it lacks. The pipeline
   limits the damage (another member tests and reviews), and the transcript digest in each report helps audits; signed
   events will at least bind each offer to a key.
-- **The policy is local.** Peers with different `policy.toml` files can reach different decisions. The policy should
-  itself be versioned in the log (a `policy` event approved by a human), so every peer folds with the same one.
+- **The policy.** The author publishes it into the log (`baton policy`), so peers fold with the same one; a log whose
+  author never published one falls back to each peer's local file.
+- **Reachability.** Nodes need an address others can reach; there is no NAT traversal or relay yet.
 
 ## Next
 
-1. Signed events and a policy carried in the log.
+1. ~~Signed events and a policy carried in the log~~: done in 0.6. Next: NAT traversal and relays for nodes.
 2. Sandboxing for the runner: an agent sees only its lease's paths, and holds no forge credentials.
 3. Verified results as first-class events (`verdict {pr, commit, command, exit, output_digest, baseline}`), so a
    review that says "tests pass" names the exact commit and command, and a claim about another PR is checked

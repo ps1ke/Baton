@@ -1,7 +1,7 @@
 {
  "$schema": "https://json-schema.org/draft/2020-12/schema",
- "$id": "https://baton.invalid/schemas/2/package.schema.json",
- "title": "baton work package (protocol 2)",
+ "$id": "https://baton.invalid/schemas/3/package.schema.json",
+ "title": "baton work package (protocol 3)",
  "description": "The body of a `task` event (spec section 4.2).",
  "type": "object",
  "required": [
@@ -145,6 +145,7 @@
     }
    }
   },
+  "base": {"type": "string", "pattern": "^([0-9a-f]{40}|[0-9a-f]{64})$"},
   "parent": {
    "type": "string",
    "pattern": "^[0-9a-f]{64}$"

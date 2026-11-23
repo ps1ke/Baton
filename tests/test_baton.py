@@ -188,7 +188,7 @@ class GateTests(Base):
         p1 = self.propose("w1", T0 + 10)
         by_planner = self.a.append("approve", "p", {"proposal": p1.id}, T0 + 11)
         s = self.a.state()
-        self.assertIn("for humans and approvers", s.ignored[by_planner.id])
+        self.assertIn("level-0 decision", s.ignored[by_planner.id])
         self.assertEqual(s.proposals[p1.id].status, "pending")
         self.a.append("approve", "human:ana", {"proposal": p1.id}, T0 + 12)
         self.assertEqual(self.a.state().proposals[p1.id].status, "approved")

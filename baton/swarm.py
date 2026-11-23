@@ -59,8 +59,14 @@ def questions(s, member: str) -> list:
 class Swarm:
     def __init__(self, store: Store, member: str, cfg: dict, probe: dict, max_runs: int = 20,
                  timeout: float | None = 1800.0, once: bool = False, interval: float = 3.0,
-                 sync_every: float | None = None, transcripts: Path | None = None, log=print, now=time.time):
+                 sync_every: float | None = None, transcripts: Path | None = None, log=print, now=time.time,
+                 ws=None, p2p: dict | None = None):
         self.store, self.me, self.cfg, self.probe = store, member, cfg, probe
+        self.ws = ws
+        self.repo = None
+        self.node = None
+        self.p2p = p2p or {}
+        self.pushed: set[str] = set()
         self.max_runs, self.timeout, self.once, self.interval, self.log, self.now = max_runs, timeout, once, interval, log, now
         self.transcripts = transcripts
         self.running: dict[str, tuple[Job, threading.Thread]] = {}
@@ -73,9 +79,10 @@ class Swarm:
         self.syncer = syncmod.Syncer([store.home], sync_every, log=log) if sync_every else None
         s = store.state()
         a = s.actors.get(member)
-        if a is None:
+        if a is None and not (p2p or sync_every):
             raise KeyError(f"{member} is not a member of this project (join, or apply and be admitted, first)")
-        if a.kind != "member":
+        self.waiting = a is None   # applied, not admitted yet: sync until the admission arrives
+        if a is not None and a.kind != "member":
             raise ValueError(f"{member} is a human; a swarm runs this machine's agents")
         self.policy = store.policy()
         if not self.offer_body()["models"]:
@@ -83,7 +90,10 @@ class Swarm:
 
     # -- presence -------------------------------------------------------------------------------------------------
     def offer_body(self) -> dict:
-        return mc.offer(self.probe, self.cfg, self.policy.presence_ttl)
+        o = mc.offer(self.probe, self.cfg, self.policy.presence_ttl)
+        if self.node and self.p2p.get("advertise"):
+            o["peer"] = {"addr": self.p2p["advertise"], "cert": self.node.fp}   # how other members reach this node
+        return o
 
     def announce(self, force: bool = False):
         body = self.offer_body()
@@ -175,7 +185,8 @@ class Swarm:
     def start(self, job: Job) -> bool:
         if job.kind == "work":
             try:
-                run = runner.Run(self.store, self.me, job.task.id, job.pick.model, self.probe, self.cfg)
+                run = runner.Run(self.store, self.me, job.task.id, job.pick.model, self.probe, self.cfg,
+                                 repo=self.repo, worktrees=self.worktrees)
                 lease_id = run.take()   # here, not in the thread: the next pass must see the lease
             except (RuntimeError, ValueError, PermissionError) as err:
                 self.log(f"{self.me}: {err}")
@@ -191,10 +202,40 @@ class Swarm:
         th.start()
         return True
 
+    @property
+    def worktrees(self):
+        return Path(self.ws.dir) / "worktrees" / (self.store.state().project_id or "private")[:16] if self.ws else None
+
+    def level0_duties(self, s):
+        """A steward's own decisions that need no agent: propose pushing each finished root package's patch."""
+        me = s.actors.get(self.me)
+        if not me or not me.level0 or not self.repo:
+            return
+        proposed = {p.payload.get("package") for p in s.proposals.values() if p.action == "push"
+                    and p.status not in ("rejected",)}
+        for t in s.tasks.values():
+            patch = (t.report or {}).get("patch")
+            if t.parent is None and t.of is None and t.outcome == "done" and patch and t.id not in proposed \
+                    and t.id not in self.pushed:
+                self.pushed.add(t.id)
+                body = {"action": "push", "target": s.project.get("repo", ""),
+                        "payload": {"branch": f"baton/{t.id[:12]}", "base": t.report.get("base", ""), "patch": patch,
+                                    "package": t.id, "title": t.title}}
+                e = self.store.append("propose", self.me, body, self.now())
+                st = self.store.state().proposals.get(e.id)
+                self.log(f"{self.me}: proposes to push “{t.title}” as baton/{t.id[:12]} ({st.status if st else '?'})")
+
     def tick(self) -> int:
         if self.stopping.is_set():
             return 0
+        if self.waiting:
+            a = self.store.state().actors.get(self.me)
+            if a is None:
+                return 0
+            self.waiting = False
+            self.log(f"{self.me}: admitted; starting work")
         self.announce()
+        self.level0_duties(self.store.state())
         started = 0
         for job in self.plan(self.store.state(), self.now()):
             started += self.start(job)
@@ -211,9 +252,30 @@ class Swarm:
         return any(s.task_status(p, t) in ("open", "taken", "checking", "waiting") for p in s.tasks.values())
 
     def run(self) -> list[tuple[str, str, str]]:
+        if self.ws is not None:
+            from . import codeflow
+            self.repo = codeflow.checkout(self.ws, self.store)
+            if self.repo:
+                self.log(f"swarm: works in worktrees of {self.repo}")
+        stop_p2p = threading.Event()
+        if self.p2p:
+            from . import p2p as p2pmod
+            self.node = p2pmod.Node(self.store, self.me, Path(self.ws.dir) / "tls", log=self.log)
+            host, _, port = self.p2p.get("listen", "0.0.0.0:7420").rpartition(":")
+            self.node.serve(host, int(port))
+            self.node.addr = self.p2p.get("advertise")
+            for addr, fp in self.p2p.get("peers", {}).items():
+                self.node.extra[addr] = fp
+            threading.Thread(target=self.node.run, args=(self.p2p.get("every", 5.0), stop_p2p), daemon=True).start()
+            self.log(f"swarm: peer node on {self.p2p.get('listen')} (certificate {self.node.fp[:16]}…)")
         if self.syncer:
             self.syncer.tick()
             self.syncer.start()
+        if self.waiting:
+            self.log(f"swarm: {self.me} is not admitted yet; syncing until it is")
+            while self.waiting and not self.stopping.is_set():
+                self.tick()
+                time.sleep(self.interval)
         self.announce(force=True)
         o = self.last_offer[1]
         self.log(f"swarm: {self.me} on {self.store.home} ({o['slots']} slot(s), max runs {self.max_runs or 'unlimited'}"
@@ -238,6 +300,10 @@ class Swarm:
             if self.syncer:
                 self.syncer.stop()
                 syncmod.sync_once(self.store)
+            if self.node:
+                self.node.gossip()
+                stop_p2p.set()
+                self.node.stop()
         return self.results
 
     def stop(self):

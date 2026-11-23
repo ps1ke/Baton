@@ -1,7 +1,7 @@
 {
  "$schema": "https://json-schema.org/draft/2020-12/schema",
- "$id": "https://baton.invalid/schemas/2/report.schema.json",
- "title": "baton report (protocol 2)",
+ "$id": "https://baton.invalid/schemas/3/report.schema.json",
+ "title": "baton report (protocol 3)",
  "description": "The `report` of a `done` event (spec section 4.2). At most 32000 bytes canonical.",
  "type": "object",
  "additionalProperties": false,

@@ -16,6 +16,7 @@ import subprocess
 import sys
 import threading
 import time
+from pathlib import Path
 
 from . import machine as mc
 from .store import Store
@@ -133,13 +134,17 @@ def agent_env(store: Store, actor: str, task_id: str | None = None) -> dict:
     env.pop("BATON_TASK", None)
     if task_id:
         env["BATON_TASK"] = task_id
+    kr = getattr(store, "_keyring", None)
+    if kr is not None:   # the agent signs with this machine's keys: point it at this machine's workspace
+        env["BATON_WORKSPACE"] = str(Path(kr.dir).parent.resolve())
     return env
 
 
-def launch(cmd, env, stdin_text, timeout, transcript=None) -> tuple[int, str, str]:
+def launch(cmd, env, stdin_text, timeout, transcript=None, cwd=None) -> tuple[int, str, str]:
     """Run an agent command: (exit code, its stdout, stdout+stderr). Never raises for the agent's own failures."""
     try:
-        r = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=timeout, input=stdin_text)
+        r = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=timeout, input=stdin_text,
+                           cwd=str(cwd) if cwd else None)
         code, said, out = r.returncode, r.stdout or "", (r.stdout or "") + (r.stderr or "")
     except subprocess.TimeoutExpired as err:
         code, said = -1, f"timed out after {timeout}s"
@@ -160,8 +165,10 @@ def launch(cmd, env, stdin_text, timeout, transcript=None) -> tuple[int, str, st
 class Run:
     """One agent run on one package, with the model the network picked."""
 
-    def __init__(self, store: Store, actor: str, task_id: str, model: str, probe: dict, cfg: dict, now=time.time):
+    def __init__(self, store: Store, actor: str, task_id: str, model: str, probe: dict, cfg: dict, now=time.time,
+                 repo=None, worktrees=None):
         self.store, self.actor, self.model, self.now = store, actor, model, now
+        self.repo, self.worktrees = repo, worktrees   # this machine's clone, and where package worktrees go
         self.state = store.state()
         self.task = self.state.tasks[store.resolve(task_id, self.state.tasks)]
         self.template, self.effort = mc.command_for(probe, cfg, model)
@@ -198,9 +205,18 @@ class Run:
         t = threading.Thread(target=keep_alive, daemon=True)
         t.start()
         started = self.now()
+        env = agent_env(self.store, self.actor, self.task.id)
+        where = base = None
         try:
-            code, said, out = launch(cmd, agent_env(self.store, self.actor, self.task.id),
-                                     self.prompt() if self.uses_stdin() else None, timeout, transcript)
+            if self.repo:
+                from . import codeflow
+                where, base = codeflow.prepare(self.store, self.state, self.task, self.repo,
+                                               Path(self.worktrees) / self.task.id[:16])
+                env.update(BATON_WORKTREE=str(where), BATON_BASE=base)
+            code, said, out = launch(cmd, env, self.prompt() if self.uses_stdin() else None, timeout, transcript,
+                                     cwd=where)
+        except RuntimeError as err:   # the inputs did not apply: say so, the package goes back to the network
+            code, said, out = -3, str(err), str(err)
         finally:
             stop.set()
             t.join(timeout=5)
@@ -211,16 +227,22 @@ class Run:
             text = said.strip() or out.strip()
             tail = text.splitlines()[-1][:300] if text else ""
             if code == 0 and self.task.kind in ("implement", "investigate"):
-                self.store.append("done", self.actor, {
-                    "task": self.task.id, "outcome": "done", "summary": tail or "exit 0",
-                    "evidence": {"exit": code, "seconds": round(self.now() - started, 1), "model": self.model,
-                                 "output_sha256": hashlib.sha256(out.encode("utf-8", "replace")).hexdigest(),
-                                 "reported": False}}, self.now())
+                body = {"task": self.task.id, "outcome": "done", "summary": tail or "exit 0",
+                        "evidence": {"exit": code, "seconds": round(self.now() - started, 1), "model": self.model,
+                                     "output_sha256": hashlib.sha256(out.encode("utf-8", "replace")).hexdigest(),
+                                     "reported": False}}
+                if where and self.task.kind == "implement":
+                    from . import codeflow
+                    body["report"] = codeflow.capture(self.store, self.task, where, base)
+                self.store.append("done", self.actor, body, self.now())
             else:   # give it back: the network offers it again (a package that keeps failing stalls, see state)
                 self.store.append("release", self.actor, {"lease": lease_id}, self.now())
                 log(f"{self.actor}: {self.task.id[:12]} gave no report (exit {code}): released" + (f" — {tail}" if tail else ""))
             s = self.store.state()
             task = s.tasks[self.task.id]
+        if where:
+            from . import codeflow
+            codeflow.cleanup(self.repo, where)
         result = task.outcome or task.phase or s.task_status(task, self.now())
         log(f"{self.actor}: {self.task.id[:12]} {result}")
         return result
