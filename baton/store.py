@@ -98,13 +98,14 @@ class Store:
         return subprocess.run(["git", "-C", str(self.home), *args], capture_output=True, text=True, check=check)
 
     def sync(self, remote: str = "origin", branch: str = "main") -> str:
-        """Commit new events, pull the remote's (a union: event files never conflict) and push the result."""
+        """Commit new events, pull the remote's (a union: event files never conflict, so even two peers that started
+        separate histories merge cleanly) and push the result."""
         if not (self.home / ".git").exists():
             raise RuntimeError(f"{self.home} is not a git repository: run `git init` there and add a remote")
         self._git("add", "events", "policy.toml")
         if self._git("diff", "--cached", "--quiet", check=False).returncode:
             self._git("commit", "-q", "-m", "baton: new events")
-        pull = self._git("pull", "-q", "--no-rebase", "--no-edit", remote, branch, check=False)
+        pull = self._git("pull", "-q", "--no-rebase", "--no-edit", "--allow-unrelated-histories", remote, branch, check=False)
         if pull.returncode and "couldn't find remote ref" not in pull.stderr:
             raise RuntimeError(pull.stderr.strip() or "git pull failed")
         push = self._git("push", "-q", remote, f"HEAD:{branch}", check=False)
