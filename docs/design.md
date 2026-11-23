@@ -135,5 +135,5 @@ author. `baton execute` runs an approved proposal through the forge adapter (dry
    mechanically before it is posted.
 4. Escalation routing: a task that ends `escalated` goes back to the board for the holder's orchestrator, with the
    worker's summary, and the orchestrator decides (re-scope, re-post at a higher tier, or ask a human).
-6. Scheduling: a `baton swarm` that keeps N workers per orchestrator busy, with per-role concurrency and cost caps.
-5. Metrics from the log: duplicates refused, budget refusals, lease contention per path, cost per executed action.
+5. Scheduling: a `baton swarm` that keeps N workers per orchestrator busy, with per-role concurrency and cost caps.
+6. Metrics from the log: duplicates refused, budget refusals, lease contention per path, cost per executed action.
