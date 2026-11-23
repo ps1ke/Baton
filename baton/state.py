@@ -1,5 +1,5 @@
 """Fold the event log into state. Every decision is made here, from the events alone, so peers that hold the same events
-agree on every lease, budget and approval without asking anyone.
+agree on every member, assignment, lease, check, budget and approval without asking anyone.
 
 Decisions use an event's *effective* time: its own timestamp, but never earlier than its parents' effective times, so an
 event cannot be backdated before what its author had already seen.
@@ -12,8 +12,10 @@ from dataclasses import dataclass, field
 
 from . import events as ev
 from . import manifest as mf
+from . import network
 from . import paths
-from .policy import Policy
+from . import wp
+from .policy import KINDS, TIERS, Policy, tier_index
 
 
 @dataclass
@@ -27,6 +29,8 @@ class Lease:
     ttl: float
     expiry: float
     released: bool = False
+    model: str = ""
+    package: str | None = None
 
     def active(self, t: float) -> bool:
         return not self.released and self.start <= t < self.expiry
@@ -37,32 +41,53 @@ class Lease:
 
 @dataclass
 class Task:
+    """A work package (wp.py) and where it stands."""
     id: str
     by: str
     title: str
-    detail: str
-    paths: tuple[str, ...]
-    topics: tuple[str, ...]
-    role: str | None             # only this role may take it
-    parent: str | None           # the task this one was split from
+    kind: str
+    level: int
+    parent: str | None
     created: float
-    lease: str | None = None     # the lease that holds it now (or last held it)
-    outcome: str | None = None   # done failed escalated
+    goal: str = ""
+    detail: str = ""
+    paths: tuple[str, ...] = ()
+    topics: tuple[str, ...] = ()
+    acceptance: list = field(default_factory=list)
+    deliverables: list = field(default_factory=list)
+    constraints: list = field(default_factory=list)
+    inputs: list = field(default_factory=list)
+    size: str | None = None
+    tier: str = "standard"
+    hardware: tuple[str, ...] = ()
+    depends_on: tuple[str, ...] = ()
+    of: str | None = None              # a test or review: the implement package it checks
+    lease: str | None = None           # the lease that holds it now (or last held it)
+    outcome: str | None = None         # done failed escalated
     summary: str = ""
+    report: dict = field(default_factory=dict)
     evidence: dict = field(default_factory=dict)
     subtasks: list[str] = field(default_factory=list)
-    ended: float | None = None   # effective time of its `done`
+    checks: list[str] = field(default_factory=list)   # implement: its test and review packages, in order
+    ended: float | None = None
+    phase: str = ""                    # orchestrate: "" | waiting | integrate; implement: "" | checking
+    rework: int = 0
+    feedback: list[str] = field(default_factory=list)
+    runs: list[dict] = field(default_factory=list)    # {member, model, family, lease}
+    round_start: int = 0               # runs before the current round (a rework or an integration starts one)
+
+    @property
+    def role(self):   # older readers
+        return self.kind
 
 
-OUTCOMES = ("done", "failed", "escalated")
+FINAL = ("done", "failed", "escalated")
 
 
 @dataclass
 class Application:
     id: str
     actor: str
-    role: str
-    parent: str | None
     offer: dict
     note: str
     ts: float
@@ -87,21 +112,21 @@ class Proposal:
 
     @property
     def counts(self) -> bool:
-        """Counts against a budget: everything that was let through or is waiting."""
         return self.status in ("pending", "approved", "executed")
 
 
 @dataclass
 class Message:
     id: str
-    seq: int                     # position in the fold: later messages have larger seq
+    seq: int
     actor: str
     text: str
-    task: str | None             # the task thread it belongs to
-    to: str | None               # addressed to one actor (else everyone following the thread)
+    task: str | None
+    to: str | None
     reply_to: str | None
-    root: str                    # the first message of its reply chain
+    root: str
     ts: float
+    ask: bool = False            # a question that waits for a reply
 
 
 MESSAGE_MAX = 4000
@@ -110,51 +135,75 @@ MESSAGE_MAX = 4000
 @dataclass
 class Actor:
     name: str
-    role: str
-    parent: str | None
-    model: str = ""
-    effort: str = ""
-    children: list[str] = field(default_factory=list)
+    kind: str                    # human | member
+    joined: float = 0.0
+    offer: dict = field(default_factory=dict)
+    offer_at: float | None = None
+
+    @property
+    def role(self):              # older readers
+        return "human" if self.kind == "human" else "member"
+
+    def present(self, t: float) -> bool:
+        if self.offer_at is None:
+            return False
+        return self.offer_at <= t < self.offer_at + float(self.offer.get("ttl", 0))
 
 
 @dataclass
 class State:
+    policy: Policy = field(default_factory=Policy)
     actors: dict[str, Actor] = field(default_factory=dict)
     leases: dict[str, Lease] = field(default_factory=dict)
-    denied: dict[str, str] = field(default_factory=dict)        # claim event id -> why
+    denied: dict[str, str] = field(default_factory=dict)
     proposals: dict[str, Proposal] = field(default_factory=dict)
     tasks: dict[str, Task] = field(default_factory=dict)
     applications: dict[str, Application] = field(default_factory=dict)
-    messages: dict[str, Message] = field(default_factory=dict)  # in fold order
-    project_id: str | None = None                               # the genesis `project` event
-    project: dict = field(default_factory=dict)                 # the project's current public fields
+    messages: dict[str, Message] = field(default_factory=dict)
+    project_id: str | None = None
+    project: dict = field(default_factory=dict)
     project_updated: float = 0.0
-    ignored: dict[str, str] = field(default_factory=dict)       # event id -> why it had no effect
+    ignored: dict[str, str] = field(default_factory=dict)
 
     @property
     def join_mode(self) -> str:
-        """A log with no `project` event is a private workspace: anyone may join, as before the protocol had projects."""
         return self.project.get("join", "apply") if self.project_id else "open"
 
+    def members(self) -> list[Actor]:
+        return [a for a in self.actors.values() if a.kind == "member"]
+
+    # -- packages -------------------------------------------------------------------------------------------------
     def task_status(self, task: Task, t: float) -> str:
-        """open, taken, or the outcome. A task whose lease lapsed without a `done` is open again."""
+        """open, taken, waiting (for children or dependencies), checking (in its pipeline), blocked, or the outcome."""
         if task.outcome:
             return task.outcome
         lease = self.leases.get(task.lease) if task.lease else None
-        return "taken" if lease and lease.active(t) else "open"
+        if lease and lease.active(t):
+            return "taken"
+        if task.phase == "checking":
+            return "checking"
+        if task.phase != "waiting" and len(task.runs) - task.round_start >= self.policy.max_attempts:
+            return "stalled"   # taken this many times without a report: a human looks (release it to retry)
+        if task.phase == "waiting":
+            return "open" if all(self.tasks[c].outcome for c in task.subtasks) else "waiting"
+        for d in task.depends_on:
+            dep = self.tasks.get(d)
+            if dep is None or dep.outcome in ("failed", "escalated"):
+                return "blocked"
+            if dep.outcome != "done":
+                return "waiting"
+        return "open"
 
-    def open_tasks(self, t: float, role: str | None = None) -> list[Task]:
-        """Tasks nobody holds, oldest first, that a `role` may take and whose scope is free right now."""
+    def open_tasks(self, t: float, role=None) -> list[Task]:
+        """Packages nobody holds whose scope is free right now, oldest first."""
         out = []
-        for task in sorted(self.tasks.values(), key=lambda x: x.created):
-            if self.task_status(task, t) != "open" or (role and task.role and task.role != role):
-                continue
-            if task.subtasks and any(not self.tasks[c].outcome for c in task.subtasks):
-                continue   # split into subtasks that are still running
-            if self.conflicts(task.paths, task.topics, t):
-                continue
-            out.append(task)
+        for task in sorted(self.tasks.values(), key=lambda x: (x.created, x.id)):
+            if self.task_status(task, t) == "open" and not self.conflicts(task.paths, task.topics, t):
+                out.append(task)
         return out
+
+    def assignment(self, t: float) -> dict:
+        return network.assign(self, self.policy, t)
 
     def active_leases(self, t: float) -> list[Lease]:
         return [l for l in self.leases.values() if l.active(t)]
@@ -163,26 +212,49 @@ class State:
         return [l for l in self.active_leases(t) if l.actor != actor and l.collides(scope_paths, scope_topics)]
 
     def covered(self, actor: str, scope_paths, t: float) -> bool:
-        """Every path is inside a lease the actor holds at time t."""
         held = [l for l in self.active_leases(t) if l.actor == actor]
         return all(any(paths.inside(p, lp) for l in held for lp in l.paths) for p in scope_paths)
 
+    def holds(self, actor: str, task_id: str, t: float) -> bool:
+        task = self.tasks.get(task_id)
+        lease = self.leases.get(task.lease) if task and task.lease else None
+        return bool(lease and lease.active(t) and lease.actor == actor)
+
+    def ancestors(self, task_id: str) -> list[str]:
+        out, seen = [], set()
+        task = self.tasks.get(task_id)
+        while task and task.parent and task.parent not in seen:
+            seen.add(task.parent)
+            out.append(task.parent)
+            task = self.tasks.get(task.parent)
+        return out
+
+    # -- messages -------------------------------------------------------------------------------------------------
     def thread(self, task_id: str) -> list[Message]:
         return [m for m in self.messages.values() if m.task == task_id]
 
+    def replied(self, m: Message) -> bool:
+        return any(x.reply_to == m.id for x in self.messages.values())
+
     def _answered(self, m: Message, actor: str) -> bool:
-        """`actor` wrote after `m` in reply to it, or later in the same task thread."""
         return any(x.actor == actor and x.seq > m.seq and (x.reply_to == m.id or (m.task and x.task == m.task))
                    for x in self.messages.values())
 
     def inbox(self, actor: str, unanswered: bool = True) -> list[Message]:
-        """Messages for `actor`: addressed to it, replies to what it wrote, or posted to the thread of a task it
-        created or has held, and (by default) only those it has not answered yet."""
+        """Messages for `actor`: questions (`ask`) addressed to it or asked in the thread of a package it posted, until
+        someone replies; other messages addressed to it, replying to it, or posted to a package it posted or worked
+        on, until it answers."""
         mine = {t.id for t in self.tasks.values()
-                if t.by == actor or (t.lease and t.lease in self.leases and self.leases[t.lease].actor == actor)}
+                if t.by == actor or any(r["member"] == actor for r in t.runs)}
+        posted = {t.id for t in self.tasks.values() if t.by == actor}
         wrote = {m.id for m in self.messages.values() if m.actor == actor}
         out = []
         for m in self.messages.values():
+            if m.ask:
+                if m.to == actor or (m.to is None and m.task in posted):
+                    if not unanswered or not self.replied(m):
+                        out.append(m)
+                continue
             if m.actor == actor:
                 continue
             if m.to == actor or m.reply_to in wrote or (m.to is None and m.task in mine):
@@ -190,53 +262,55 @@ class State:
                     out.append(m)
         return out
 
-    def ancestors(self, name: str) -> list[str]:
-        out, seen = [], set()
-        a = self.actors.get(name)
-        while a and a.parent and a.parent not in seen:
-            seen.add(a.parent)
-            out.append(a.parent)
-            a = self.actors.get(a.parent)
-        return out
-
 
 def _str_list(value) -> tuple[str, ...]:
+    if value is None:
+        return ()
     if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
         raise ValueError("expected a list of strings")
     return tuple(value)
 
 
+def check_offer(o) -> list[str]:
+    if not isinstance(o, dict):
+        return ["an offer must be an object"]
+    errors = []
+    if len(ev.canonical(o)) > 8000:
+        return ["an offer must be at most 8000 bytes"]
+    ms = o.get("models", [])
+    if not isinstance(ms, list) or len(ms) > 50 or not all(
+            isinstance(m, dict) and isinstance(m.get("id"), str) and ":" in m["id"] and m.get("tier") in TIERS
+            for m in ms):
+        errors.append('models must be a list of {"id": "provider:model", "tier", "family"}')
+    slots = o.get("slots", 0)
+    if not isinstance(slots, int) or isinstance(slots, bool) or not 0 <= slots <= 64:
+        errors.append("slots must be an integer 0..64")
+    hw = o.get("hardware")
+    if hw is not None and (not isinstance(hw, dict) or not isinstance(hw.get("tags", []), list)):
+        errors.append("hardware must be an object with a tags list")
+    return errors
+
+
 class _Folder:
     def __init__(self, policy: Policy):
         self.p = policy
-        self.s = State()
+        self.s = State(policy=policy)
         self.eff: dict[str, float] = {}
         for h in sorted(policy.humans):
-            self.s.actors[h] = Actor(h, "human", None)
+            self.s.actors[h] = Actor(h, "human")
 
     def ignore(self, e: ev.Event, why: str):
         self.s.ignored[e.id] = why
 
+    GOVERN = {"project", "admit", "decline", "approve", "reject", "executed"}
+
     def allowed(self, e: ev.Event) -> str | None:
-        """None when the actor may emit this kind of event, else the reason it may not."""
         a = self.s.actors.get(e.actor)
         if a is None:
             return "actor has not joined"
-        if a.role == "human":
+        if a.kind == "human" or e.kind not in self.GOVERN:
             return None
-        need = self.p.role_of_kind(e.kind)
-        if need == "approve":
-            return None if a.role in self.p.approver_roles else f"role {a.role} cannot approve"
-        if need == "execute":
-            return None if a.role in self.p.approver_roles else f"role {a.role} cannot execute"
-        if need == "govern":
-            return None if a.role in self.p.approver_roles else f"role {a.role} cannot change the project"
-        if need == "talk":    # every member may talk; messages never act on anything
-            return None
-        if need == "admit":   # approvers, or a role that may admit (then only under itself: on_admit checks)
-            ok = a.role in self.p.approver_roles or "admit" in self.p.roles[a.role].can
-            return None if ok else f"role {a.role} cannot admit members"
-        return None if need in self.p.roles[a.role].can else f"role {a.role} cannot {need}"
+        return None if e.actor in self.p.approvers else f"{e.kind} is for humans and approvers"
 
     def run(self, ordered: list[ev.Event]) -> State:
         for e in ordered:
@@ -249,42 +323,50 @@ class _Folder:
                     continue
             try:
                 getattr(self, "on_" + e.kind)(e, t)
-            except (ValueError, TypeError, KeyError) as err:
+            except (ValueError, TypeError, KeyError, AttributeError) as err:
                 self.ignore(e, f"bad body: {err}")
         return self.s
 
-    # -- tree ---------------------------------------------------------------------------------------------------
-    def _place(self, name: str, role_name, parent) -> str | None:
-        """Add `name` to the tree as `role_name` under `parent`; the reason it cannot be, if it cannot."""
+    # -- members --------------------------------------------------------------------------------------------------
+    def _member(self, name: str, offer, t: float) -> str | None:
         if name in self.s.actors:
-            return "already joined"
-        role = self.p.roles.get(role_name)
-        if role is None:
-            return f"unknown role {role_name!r}"
-        if role.under == "human":
-            if parent not in self.p.humans:
-                return f"a {role.name} must join under a human ({sorted(self.p.humans)})"
-        else:
-            pa = self.s.actors.get(parent)
-            if pa is None or pa.role != role.under:
-                return f"a {role.name} must join under a {role.under}"
-            if len(pa.children) >= self.p.roles[pa.role].max_children:
-                return f"{parent} already has {len(pa.children)} children (max_children)"
-        self.s.actors[name] = Actor(name, role.name, parent, role.model, role.effort)
-        if parent in self.s.actors:
-            self.s.actors[parent].children.append(name)
+            return "already a member"
+        if name.startswith("human:"):
+            return "human:... names are for the humans listed in the policy"
+        offer = offer or {}
+        errors = check_offer(offer)
+        if errors:
+            return "; ".join(errors)
+        a = Actor(name, "member", joined=t)
+        self.s.actors[name] = a
+        if offer.get("models"):
+            self._set_offer(a, offer, t)
         return None
+
+    def _set_offer(self, a: Actor, offer: dict, t: float):
+        a.offer = dict(offer)
+        a.offer["ttl"] = min(float(offer.get("ttl", self.p.presence_ttl)), self.p.presence_ttl)
+        a.offer_at = t
 
     def on_join(self, e, t):
         if self.s.join_mode != "open":
             return self.ignore(e, f"this project takes members by application (join: {self.s.join_mode})")
-        why = self._place(e.actor, e.body["role"], e.body.get("parent"))
+        why = self._member(e.actor, e.body.get("offer"), t)
         if why:
             self.ignore(e, why)
 
+    def on_offer(self, e, t):
+        a = self.s.actors[e.actor]
+        if a.kind != "member":
+            return self.ignore(e, "only members offer machines")
+        errors = check_offer(e.body)
+        if errors:
+            return self.ignore(e, "; ".join(errors))
+        self._set_offer(a, e.body, t)
+
     # -- the project and its members ----------------------------------------------------------------------------
     def on_project(self, e, t):
-        fields = {k: v for k, v in e.body.items()}
+        fields = dict(e.body)
         errors = mf.check_fields(fields)
         if not errors and set(fields) - set(mf.FIELDS):
             errors = [f"a project event sets only {', '.join(mf.FIELDS)}"]
@@ -304,20 +386,20 @@ class _Folder:
     def on_apply(self, e, t):
         if e.actor in self.s.actors:
             return self.ignore(e, "already a member")
+        if e.actor.startswith("human:"):
+            return self.ignore(e, "human:... names are for the humans listed in the policy")
         if self.s.join_mode == "closed":
             return self.ignore(e, "this project is closed to new members")
         if any(a.actor == e.actor and a.status == "pending" for a in self.s.applications.values()):
             return self.ignore(e, "an application from this actor is already pending")
-        b = e.body
-        if b.get("role") not in self.p.roles:
-            return self.ignore(e, f"unknown role {b.get('role')!r}")
-        offer = b.get("offer", {})
-        if not isinstance(offer, dict) or len(ev.canonical(offer)) > 4000:
-            return self.ignore(e, "offer must be an object of at most 4000 bytes")
-        note = b.get("note", "")
+        offer = e.body.get("offer", {})
+        errors = check_offer(offer) if offer else []
+        if errors:
+            return self.ignore(e, "; ".join(errors))
+        note = e.body.get("note", "")
         if not isinstance(note, str) or len(note) > 2000:
             return self.ignore(e, "note must be a string of at most 2000 characters")
-        self.s.applications[e.id] = Application(e.id, e.actor, b["role"], b.get("parent"), offer, note, t)
+        self.s.applications[e.id] = Application(e.id, e.actor, offer, note, t)
 
     def _application(self, e) -> Application | None:
         name = e.body["applicant"]
@@ -327,81 +409,171 @@ class _Folder:
             return None
         return pending[-1]
 
-    def _may_decide(self, e, parent) -> bool:
-        a = self.s.actors[e.actor]
-        if a.role == "human" or a.role in self.p.approver_roles or parent == e.actor:
-            return True
-        self.ignore(e, "a member admits or declines only applicants who would sit under it")
-        return False
-
     def on_admit(self, e, t):
         app = self._application(e)
         if app is None:
             return
-        role, parent = e.body.get("role", app.role), e.body.get("parent", app.parent)
-        if not self._may_decide(e, parent):
-            return
-        why = self._place(app.actor, role, parent)
+        why = self._member(app.actor, app.offer, t)
         if why:
             return self.ignore(e, why)
         app.status, app.decided_by = "admitted", e.actor
 
     def on_decline(self, e, t):
         app = self._application(e)
-        if app is None or not self._may_decide(e, app.parent):
+        if app is None:
             return
         app.status, app.decided_by, app.reason = "declined", e.actor, str(e.body.get("reason", ""))[:500]
 
-    # -- tasks ------------------------------------------------------------------------------------------------
+    # -- work packages --------------------------------------------------------------------------------------------
     def on_task(self, e, t):
         b = e.body
-        title = str(b.get("title", "")).strip()
-        if not title:
-            return self.ignore(e, "a task needs a title")
-        role = b.get("role")
-        if role is not None and role not in self.p.roles:
-            return self.ignore(e, f"unknown role {role!r}")
-        parent = b.get("parent")
-        if parent is not None and parent not in self.s.tasks:
-            return self.ignore(e, "no such parent task")
-        task = Task(e.id, e.actor, title, str(b.get("detail", "")),
-                    tuple(paths.norm(x) for x in _str_list(b.get("paths", []))), _str_list(b.get("topics", [])),
-                    role, parent, t)
+        errors = wp.check_package(b)
+        if errors:
+            return self.ignore(e, "; ".join(errors))
+        human = self.s.actors[e.actor].kind == "human" or e.actor in self.p.approvers
+        parent = self.s.tasks.get(b["parent"]) if b.get("parent") else None
+        if b.get("parent") and parent is None:
+            return self.ignore(e, "no such parent package")
+        if parent and parent.kind != "orchestrate":
+            return self.ignore(e, "only an orchestrate package has child packages")
+        kind = b.get("kind") or wp.default_kind(b)
+        scope = tuple(paths.norm(x) for x in _str_list(b.get("paths")))
+        if not human:
+            if parent is None:
+                return self.ignore(e, "members post packages only as children of an orchestrate package they hold")
+            if not self.s.holds(e.actor, parent.id, t):
+                return self.ignore(e, "post children only while holding the parent package's lease")
+            if kind not in wp.CHILD_KINDS:
+                return self.ignore(e, f"an orchestrator posts {', '.join(wp.CHILD_KINDS)} packages")
+            if parent.paths and not all(any(paths.inside(p, q) for q in parent.paths) for p in scope or ("",)):
+                return self.ignore(e, "a child's paths must lie inside its parent's")
+        level = parent.level + 1 if parent else 0
+        if kind == "orchestrate" and level >= self.p.max_depth:
+            return self.ignore(e, f"level {level} is below the deepest orchestration level ({self.p.max_depth - 1})")
+        if parent and len(parent.subtasks) >= self.p.max_children:
+            return self.ignore(e, f"the parent already has {len(parent.subtasks)} children (max_children)")
+        deps = _str_list(b.get("depends_on"))
+        if any(d not in self.s.tasks or self.s.tasks[d].parent != (parent.id if parent else None) for d in deps):
+            return self.ignore(e, "depends_on must name sibling packages")
+        need = self.p.tier_for(kind, level)
+        asked = (b.get("needs") or {}).get("tier")
+        tier = asked if asked and tier_index(asked) > tier_index(need) else need
+        task = Task(e.id, e.actor, b["title"].strip(), kind, level, parent.id if parent else None, t,
+                    goal=b.get("goal", ""), detail=b.get("context") or b.get("detail") or "", paths=scope,
+                    topics=_str_list(b.get("topics")), acceptance=list(b.get("acceptance") or []),
+                    deliverables=list(b.get("deliverables") or []), constraints=list(b.get("constraints") or []),
+                    inputs=list(b.get("inputs") or []), size=b.get("size"), tier=tier,
+                    hardware=_str_list((b.get("needs") or {}).get("hardware")), depends_on=deps)
         self.s.tasks[e.id] = task
         if parent:
-            self.s.tasks[parent].subtasks.append(e.id)
+            parent.subtasks.append(e.id)
+
+    def _derive(self, impl: Task, step: int, t: float) -> Task:
+        kind = self.p.pipeline[step]
+        pid = ev.digest({"derived": kind, "of": impl.id, "round": impl.rework, "step": step})
+        title = ("Test: " if kind == "test" else "Review: ") + impl.title
+        goal = ("Run the acceptance checks of the package and report each one; change nothing." if kind == "test" else
+                "Review the change made for the package: correctness, the acceptance criteria, the constraints, "
+                "risks. Change nothing; report findings with severities and a verdict.")
+        d = Task(pid, "network", title, kind, impl.level, None, t, goal=goal, detail=impl.goal,
+                 paths=impl.paths, topics=impl.topics + (f"check:{impl.id[:12]}",), acceptance=impl.acceptance,
+                 constraints=impl.constraints, tier=self.p.tier_for(kind, impl.level), hardware=impl.hardware,
+                 of=impl.id)
+        self.s.tasks[pid] = d
+        impl.checks.append(pid)
+        return d
+
+    def _finish(self, task: Task, outcome: str, t: float):
+        task.outcome, task.ended = outcome, t
+
+    def _check_done(self, check: Task, outcome: str, t: float):
+        """A test or review of an implement package ended: pass it on, accept it, or send it back."""
+        impl = self.s.tasks[check.of]
+        if outcome == "escalated":
+            impl.summary = f"its {check.kind} escalated: {check.summary}"
+            return self._finish(impl, "escalated", t)
+        ok = outcome == "done" and (wp.tests_passed(check.report) if check.kind == "test"
+                                    else wp.review_passed(check.report))
+        if ok:
+            step = self.p.pipeline.index(check.kind) + 1
+            if step < len(self.p.pipeline):
+                self._derive(impl, step, t)
+            else:
+                impl.phase = ""
+                self._finish(impl, "done", t)
+            return
+        impl.feedback.append(wp.failure_text(check.kind, check.summary, check.report))
+        impl.rework += 1
+        impl.phase, impl.lease = "", None
+        impl.round_start = len(impl.runs)
+        if impl.rework > self.p.max_rework:
+            impl.summary = f"failed its checks {impl.rework} times; last: {check.summary}"
+            self._finish(impl, "escalated", t)
 
     def on_done(self, e, t):
         task = self.s.tasks.get(e.body["task"])
         if task is None:
-            return self.ignore(e, "no such task")
+            return self.ignore(e, "no such package")
         outcome = e.body.get("outcome", "done")
-        if outcome not in OUTCOMES:
-            return self.ignore(e, f"outcome must be one of {', '.join(OUTCOMES)}")
+        if outcome not in wp.OUTCOMES:
+            return self.ignore(e, f"outcome must be one of {', '.join(wp.OUTCOMES)}")
         lease = self.s.leases.get(task.lease) if task.lease else None
         if not lease or not lease.active(t) or lease.actor != e.actor:
-            return self.ignore(e, "only the actor holding the task's lease reports it done")
-        task.outcome, task.summary, task.ended = outcome, str(e.body.get("summary", "")), t
+            return self.ignore(e, "only the actor holding the package's lease reports it")
+        report = e.body.get("report", {})
+        errors = wp.check_report(report)
+        if errors:
+            return self.ignore(e, "; ".join(errors))
+        if outcome == "split":
+            if task.kind != "orchestrate":
+                return self.ignore(e, "only an orchestrate package is split")
+            if not any(not self.s.tasks[c].outcome for c in task.subtasks):
+                return self.ignore(e, "split means children are running: post them first")
+        elif outcome == "done" and task.kind == "orchestrate" and any(not self.s.tasks[c].outcome for c in task.subtasks):
+            return self.ignore(e, "children are still running: report split, and integrate when they end")
+        task.summary, task.report = str(e.body.get("summary", ""))[:2000], dict(report)
         evidence = e.body.get("evidence", {})
         task.evidence = dict(evidence) if isinstance(evidence, dict) else {}
         lease.released, lease.expiry = True, t
+        if outcome == "split":
+            task.phase = "waiting"
+            task.round_start = len(task.runs)
+            return
+        if task.kind == "implement" and outcome == "done" and self.p.pipeline:
+            task.phase = "checking"
+            self._derive(task, 0, t)
+            return
+        self._finish(task, outcome, t)
+        if task.of:
+            self._check_done(task, outcome, t)
 
     # -- leases -------------------------------------------------------------------------------------------------
     def on_claim(self, e, t):
         b = e.body
+        actor = self.s.actors[e.actor]
         task = None
+        model = None
         if b.get("task_id") is not None:
             task = self.s.tasks.get(b["task_id"])
             if task is None:
-                return self.ignore(e, "no such task")
+                return self.ignore(e, "no such package")
             status = self.s.task_status(task, t)
             if status != "open":
-                self.s.denied[e.id] = f"task is {status}"
+                self.s.denied[e.id] = f"package is {status}"
                 return
-            role = self.s.actors[e.actor].role
-            if task.role and role not in (task.role, "human"):
-                self.s.denied[e.id] = f"task is for a {task.role}, not a {role}"
-                return
+            if actor.kind == "member":
+                pick = network.assign(self.s, self.p, t).get(task.id)
+                if pick is None or pick.member != e.actor:
+                    self.s.denied[e.id] = network.why_not(self.s, self.p, t, task.id, e.actor)
+                    return
+                model = next((m for m in actor.offer.get("models", []) if m["id"] == b.get("model", pick.model)), None)
+                want = network.need(task, self.p, t)
+                if model is None or tier_index(model["tier"]) < tier_index(want):
+                    self.s.denied[e.id] = f"the model must be one {e.actor} offers, of tier {want} or better"
+                    return
+        elif actor.kind == "member" and not actor.present(t):
+            self.s.denied[e.id] = "a member claims only while present (send an offer first)"
+            return
         scope = tuple(paths.norm(x) for x in _str_list(b.get("paths", list(task.paths) if task else [])))
         topics = _str_list(b.get("topics", list(task.topics) if task else []))
         if task is not None:
@@ -416,10 +588,13 @@ class _Folder:
             first = min(clash, key=lambda l: l.start)
             self.s.denied[e.id] = f"overlaps lease {first.id[:12]} held by {first.actor} ({first.task})"
             return
+        ref = model["id"] if model else str(b.get("model", ""))
         self.s.leases[e.id] = Lease(e.id, e.actor, str(b.get("task", "") or (task.title if task else "")), scope,
-                                    topics, t, ttl, t + ttl)
+                                    topics, t, ttl, t + ttl, model=ref, package=task.id if task else None)
         if task is not None:
             task.lease = e.id
+            task.runs.append({"member": e.actor, "model": ref, "family": (model or {}).get("family", ""),
+                              "lease": e.id, "at": t})
 
     def _lease(self, e) -> Lease | None:
         lease = self.s.leases.get(e.body["lease"])
@@ -442,8 +617,8 @@ class _Folder:
         if lease is None:
             return
         a = self.s.actors[e.actor]
-        if e.actor != lease.actor and a.role != "human" and e.actor not in self.s.ancestors(lease.actor):
-            return self.ignore(e, "only the holder, its orchestrators or a human release a lease")
+        if e.actor != lease.actor and a.kind != "human" and e.actor not in self.p.approvers:
+            return self.ignore(e, "only the holder, humans and approvers release a lease")
         if not lease.active(t):
             return self.ignore(e, "lease had already ended")
         lease.released = True
@@ -468,7 +643,8 @@ class _Folder:
             return self.ignore(e, "no such task")
         if to is not None and to not in self.s.actors:
             return self.ignore(e, f"{to} is not a member")
-        self.s.messages[e.id] = Message(e.id, len(self.s.messages), e.actor, text, task, to, reply_to, root, t)
+        self.s.messages[e.id] = Message(e.id, len(self.s.messages), e.actor, text, task, to, reply_to, root, t,
+                                        ask=bool(b.get("ask")))
 
     # -- outward actions ----------------------------------------------------------------------------------------
     def on_propose(self, e, t):
@@ -483,8 +659,7 @@ class _Folder:
         if budget is None:
             pr.status, pr.reason = "unknown_action", f"no [budgets.{action}] in the policy"
             return
-        same = [q for q in self.s.proposals.values() if q is not pr and q.key == key and q.status != "rejected"
-                and q.counts]
+        same = [q for q in self.s.proposals.values() if q is not pr and q.key == key and q.counts]
         if same:
             pr.status, pr.reason = "duplicate", f"same as {same[0].id[:12]} by {same[0].actor}"
             return
@@ -505,8 +680,7 @@ class _Folder:
         if scope and not self.s.covered(e.actor, scope, t):
             pr.status, pr.reason = "unleased", "the actor holds no active lease covering these paths"
             return
-        role = self.s.actors[e.actor].role
-        if role in self.p.auto.get(action, ()):
+        if e.actor in self.p.auto.get(action, ()):
             pr.status, pr.decided_by = "approved", "policy"
 
     def _pending(self, e) -> Proposal | None:
@@ -548,10 +722,7 @@ def fold(ordered: list[ev.Event], policy: Policy) -> State:
 
 
 def causal(events_by_id: dict[str, ev.Event]) -> tuple[list[ev.Event], dict[str, str]]:
-    """The events whose whole history is present, in fold order, and why the others are held back.
-
-    An event is admitted only after all its parents, and only with a Lamport clock above theirs.
-    """
+    """The events whose whole history is present, in fold order, and why the others are held back."""
     children: dict[str, list[str]] = {}
     missing: dict[str, int] = {}
     held: dict[str, str] = {}

@@ -14,7 +14,7 @@ import json
 from dataclasses import dataclass
 
 KINDS = frozenset({"project", "join", "apply", "admit", "decline", "task", "claim", "renew", "release", "done",
-                   "propose", "approve", "reject", "executed", "message"})
+                   "propose", "approve", "reject", "executed", "message", "offer"})
 
 
 class BadEvent(ValueError):

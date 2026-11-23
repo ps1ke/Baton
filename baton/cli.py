@@ -1,8 +1,9 @@
-"""baton: coordination for many agents working on one project, peer-to-peer.
+"""baton: a peer-to-peer network of agents working on one project.
 
-Agents join a tree of roles (each with its own model, effort and fan-out), take tasks from a shared board, lease the
-paths and topics they work on, and propose anything that leaves the machine, which passes rate budgets, duplicate
-checks and an approval gate before `execute` performs it.
+Machines offer what they have (the models the user allows, how many packages may run at once, the hardware); the
+network gives each work package to a machine and a model: orchestration per level, implementation, tests, reviews,
+investigations. Every change is tested and reviewed before it counts, leases keep agents off each other's files, and
+anything that leaves the machine waits for a human.
 """
 
 from __future__ import annotations
@@ -17,7 +18,6 @@ from pathlib import Path
 from . import forge
 from . import manifest as mf
 from . import policy as pol
-from . import runner
 from .store import Store
 
 
@@ -25,11 +25,19 @@ def _store(a) -> Store:
     return Store(a.home)
 
 
+def _ws():
+    from .workspace import Workspace
+    return Workspace()
+
+
 def _actor(a) -> str:
-    actor = a.actor or os.environ.get("BATON_ACTOR")
-    if not actor:
-        sys.exit("baton: name the actor with --actor or BATON_ACTOR")
-    return actor
+    """--actor, BATON_ACTOR, else this machine's member name."""
+    return a.actor or os.environ.get("BATON_ACTOR") or _ws().machine()["name"]
+
+
+def _probe(a=None) -> dict:
+    from . import machine as mc
+    return mc.probe([a.home] if a is not None else [], limits=bool(getattr(a, "limits", False)))
 
 
 def _outcome(store: Store, e) -> tuple[int, str]:
@@ -45,9 +53,9 @@ def _outcome(store: Store, e) -> tuple[int, str]:
     return 0, f"ok {e.id[:12]}"
 
 
-def _emit(a, kind, body) -> int:
+def _emit(a, kind, body, actor=None) -> int:
     store = _store(a)
-    e = store.append(kind, _actor(a), body)
+    e = store.append(kind, actor or _actor(a), body)
     code, text = _outcome(store, e)
     if kind == "claim" and code == 0:
         text = f"lease {e.id[:12]} granted locally; it holds once peers have synced and agree"
@@ -55,65 +63,334 @@ def _emit(a, kind, body) -> int:
     return code
 
 
+def _ago(sec: float) -> str:
+    sec = max(0, int(sec))
+    return f"{sec}s" if sec < 60 else f"{sec // 60}m" if sec < 3600 else f"{sec // 3600}h" if sec < 86400 else f"{sec // 86400}d"
+
+
 def cmd_init(a):
     store = _store(a)
     store.init()
-    print(f"initialised {store.home} (edit {store.home / 'policy.toml'}; `git init` it and add a remote to share)")
+    print(f"initialised {store.home} (put yourself in [gate] humans in {store.home / 'policy.toml'}; "
+          "`git init` it and add a remote to share)")
     return 0
 
 
+# -- this machine ----------------------------------------------------------------------------------------------------
+def _machine_report(p: dict, cfg: dict) -> str:
+    from . import machine as mc
+    c, m = p["cpu"], p["memory"]
+    lines = [f"machine {cfg['name']}  ({p['os']})",
+             f"  cpu     {c['model'] or c['arch']}: {c['physical_cores'] or '?'} cores / {c['logical_cores']} threads, "
+             f"{c['utilization_percent'] if c['utilization_percent'] is not None else '?'}% busy"
+             + (f", load {' '.join(str(x) for x in c['load'])}" if c["load"] else ""),
+             f"  memory  {m['total_gb']} GB, {m['available_gb']} GB available"]
+    for g in p["gpus"]:
+        vram = f"{g['vram_gb']} GB" + (f" ({g['vram_used_gb']} used)" if g.get("vram_used_gb") is not None else "") \
+            if g.get("vram_gb") else "memory unknown"
+        lines.append(f"  gpu     {g['name']}: {vram}"
+                     + (f", {g['utilization_percent']:.0f}% busy" if g.get("utilization_percent") is not None else ""))
+    if not p["gpus"]:
+        lines.append("  gpu     none found")
+    for d in p["disk"]:
+        lines.append(f"  disk    {d['path']}: {d['free_gb']} GB free of {d['total_gb']} GB")
+    lines.append("agents:")
+    for ag in p["agents"]:
+        if ag.get("kind") == "local":
+            state = f"local server at {ag['url']}"
+        elif not ag["installed"]:
+            state = "not installed"
+        else:
+            state = ("logged in" if ag["logged_in"] else "not logged in" if ag["logged_in"] is False else "login unknown") \
+                + (f", plan {ag['plan']}" if ag.get("plan") else "") + (f" ({ag['auth']})" if ag.get("auth") else "") \
+                + (f", {ag['version']}" if ag.get("version") else "")
+        lim = ag.get("limits") or {}
+        if lim.get("week_percent") is not None or lim.get("primary_percent") is not None:
+            state += "  usage: " + ", ".join(f"{k.replace('_percent', '')} {v}%" for k, v in lim.items()
+                                             if k.endswith("_percent") and v is not None)
+        lines.append(f"  {ag['id']:9} {state}")
+    lines.append(f"models (allowed ones are offered; slots: {cfg.get('slots') or str(mc.suggested_slots(p)) + ' (suggested)'}):")
+    for x in mc.models(p, cfg):
+        mark = "[x]" if x["allowed"] else "[ ]"
+        note = "" if x["usable"] else f"  — {x['why']}"
+        lines.append(f"  {mark} {x['ref']:40} {x['tier']:9}{' (from the catalog, not confirmed)' if x['unverified'] else ''}{note}")
+    lines.append("change: baton machine allow|deny <provider:model> ..., tier <ref> <tier>, slots <n>, cmd <provider> -- <cmd>")
+    return "\n".join(lines)
+
+
+def cmd_machine(a):
+    from . import machine as mc
+    ws = _ws()
+    cfg = ws.machine()
+    act, args = a.action, a.args
+    if act in ("allow", "deny"):
+        p = _probe(a)
+        known = {m["ref"] for m in mc.models(p, cfg)}
+        refs = [r for r in args if r != "--"]
+        if refs == ["all"]:
+            refs = [m["ref"] for m in mc.models(p, cfg) if m["usable"]]
+        unknown = [r for r in refs if r not in known]
+        if unknown and act == "allow":
+            sys.exit(f"baton: not found on this machine: {', '.join(unknown)} (see `baton machine`)")
+        allowed = [r for r in cfg["allowed"] if r not in refs] + (refs if act == "allow" else [])
+        cfg = ws.set_machine(allowed=allowed)
+    elif act == "tier":
+        if len(args) != 2:
+            sys.exit("baton: machine tier <provider:model> <fast|standard|strong|frontier>")
+        cfg = ws.set_machine(tiers={**cfg["tiers"], args[0]: args[1]})
+    elif act == "slots":
+        if len(args) != 1 or not args[0].isdigit():
+            sys.exit("baton: machine slots <n>   (how many work packages may run here at once)")
+        cfg = ws.set_machine(slots=int(args[0]))
+    elif act == "name":
+        cfg = ws.set_machine(name=args[0])
+    elif act == "cmd":
+        if not args:
+            sys.exit("baton: machine cmd <provider> -- <command ...>   ({model} {effort} {prompt} are filled in)")
+        cmd = [x for x in args[1:] if x != "--"]
+        cfg = ws.set_machine(commands={**cfg["commands"], args[0]: cmd} if cmd else
+                             {k: v for k, v in cfg["commands"].items() if k != args[0]})
+    elif act == "hardware":
+        cfg = ws.set_machine(share_hardware=args[:1] != ["hide"])
+    p = _probe(a)
+    if a.json:
+        print(json.dumps({"config": cfg, "probe": p, "models": mc.models(p, cfg),
+                          "offer": mc.offer(p, cfg, _store(a).policy().presence_ttl)}, indent=1))
+    else:
+        print(_machine_report(p, cfg))
+    return 0
+
+
+def _offer(a) -> dict:
+    from . import machine as mc
+    return mc.offer(_probe(a), _ws().machine(), _store(a).policy().presence_ttl)
+
+
 def cmd_join(a):
-    return _emit(a, "join", {"role": a.role, "parent": a.parent})
+    return _emit(a, "join", {"offer": _offer(a)})
+
+
+def cmd_offer(a):
+    o = _offer(a)
+    if not o["models"]:
+        print("this machine offers no model yet: `baton machine allow <provider:model>`")
+    return _emit(a, "offer", o)
+
+
+# -- work packages ---------------------------------------------------------------------------------------------------
+def _package_from_args(a, s, store) -> dict:
+    if a.file:
+        body = json.loads(Path(a.file).read_text(encoding="utf-8"))
+    else:
+        body = {}
+    if a.title:
+        body["title"] = a.title
+    for k in ("kind", "goal", "size"):
+        if getattr(a, k):
+            body[k] = getattr(a, k)
+    if a.context or a.detail:
+        body["context"] = a.context or a.detail
+    for k, v in (("paths", a.path), ("topics", a.topic), ("deliverables", a.deliverable),
+                 ("constraints", a.constraint), ("inputs", a.input)):
+        if v:
+            body[k] = v
+    acc = list(body.get("acceptance", []))
+    acc += [{"criterion": c} for c in a.accept or []]
+    for c in a.check or []:
+        name, _, cmd = c.partition("=")
+        acc.append({"check": name, "run": cmd} if cmd else {"check": f"check{len(acc) + 1}", "run": name})
+    if acc:
+        body["acceptance"] = acc
+    needs = dict(body.get("needs", {}))
+    if a.tier:
+        needs["tier"] = a.tier
+    if a.hardware:
+        needs["hardware"] = a.hardware
+    if needs:
+        body["needs"] = needs
+    parent = a.parent or (os.environ.get("BATON_TASK") if getattr(a, "under_current", True) else None)
+    if parent:
+        body["parent"] = store.resolve(parent, s.tasks)
+    if a.depends_on:
+        body["depends_on"] = [store.resolve(d, s.tasks) for d in a.depends_on]
+    return body
 
 
 def cmd_task(a):
-    s = _store(a).state()
-    body = {"title": a.title, "detail": a.detail or "", "paths": a.path or [], "topics": a.topic or []}
-    if a.role:
-        body["role"] = a.role
-    if a.parent:
-        body["parent"] = _store(a).resolve(a.parent, s.tasks)
+    store = _store(a)
+    s = store.state()
+    body = _package_from_args(a, s, store)
+    if not body.get("title"):
+        sys.exit("baton: a work package needs a title (or --file package.json)")
     return _emit(a, "task", body)
+
+
+def _status_line(s, t, now) -> str:
+    st = s.task_status(t, now)
+    lease = s.leases.get(t.lease) if t.lease else None
+    who = f" <- {lease.actor} ({lease.model})" if lease and st == "taken" else ""
+    return f"{'  ' * t.level}{t.id[:12]} {st:9} [{t.kind} L{t.level} {t.tier}] {t.title}{who}"
 
 
 def cmd_tasks(a):
     s = _store(a).state()
     now = time.time()
+
+    def walk(t):
+        st = s.task_status(t, now)
+        if a.all or st not in ("done", "failed"):
+            print(_status_line(s, t, now) + (f" : {t.summary}" if t.summary and a.all else ""))
+        for c in t.subtasks + t.checks:
+            walk(s.tasks[c])
+
     for t in sorted(s.tasks.values(), key=lambda x: x.created):
-        status = s.task_status(t, now)
-        if not a.all and status in ("done", "failed"):
-            continue
-        holder = s.leases[t.lease].actor if t.lease and status == "taken" else ""
-        indent = "  " if t.parent else ""
-        print(f"{indent}{t.id[:12]} {status:9} {('[' + t.role + '] ') if t.role else ''}{t.title}"
-              + (f" <- {holder}" if holder else "") + (f" : {t.summary}" if t.summary and a.all else ""))
+        if t.parent is None and t.of is None:
+            walk(t)
     return 0
 
 
+def cmd_show(a):
+    store = _store(a)
+    s = store.state()
+    t = s.tasks[store.resolve(a.task_id, s.tasks)]
+    d = {"id": t.id, "status": s.task_status(t, time.time()), "kind": t.kind, "level": t.level, "tier": t.tier,
+         "title": t.title, "goal": t.goal, "context": t.detail, "paths": list(t.paths), "topics": list(t.topics),
+         "acceptance": t.acceptance, "deliverables": t.deliverables, "constraints": t.constraints,
+         "size": t.size, "parent": t.parent, "of": t.of, "depends_on": list(t.depends_on), "by": t.by,
+         "subtasks": t.subtasks, "checks": t.checks, "runs": t.runs, "rework": t.rework, "feedback": t.feedback,
+         "outcome": t.outcome, "summary": t.summary, "report": t.report}
+    print(json.dumps({k: v for k, v in d.items() if v not in (None, "", [], {})}, indent=1, ensure_ascii=False))
+    return 0
+
+
+def _report_from_args(a) -> dict:
+    r = json.loads(Path(a.report).read_text(encoding="utf-8")) if a.report else {}
+    if a.change:
+        r["changes"] = r.get("changes", []) + [{"path": p} for p in a.change]
+    checks = list((r.get("verification") or {}).get("checks", []))
+    for c in a.check or []:   # name=status[:command]
+        name, _, rest = c.partition("=")
+        status, _, cmd = rest.partition(":")
+        if status not in ("passed", "failed", "not_run"):
+            sys.exit(f"baton: --check {c!r}: use name=passed|failed|not_run[:command]")
+        checks.append({"name": name, "status": status, **({"command": cmd} if cmd else {})})
+    if checks or a.verification:
+        status = a.verification or ("passed" if checks and all(c["status"] == "passed" for c in checks)
+                                    else "failed" if any(c["status"] == "failed" for c in checks) else "not_run")
+        r["verification"] = {"status": status, "checks": checks}
+    for f in a.finding or []:   # severity:text[@path[:line]]
+        sev, _, rest = f.partition(":")
+        text, _, where = rest.rpartition("@") if "@" in rest else (rest, "", "")
+        path, _, line = where.partition(":")
+        item = {"severity": sev, "text": text}
+        if path:
+            item["path"] = path
+        if line.isdigit():
+            item["line"] = int(line)
+        r.setdefault("findings", []).append(item)
+    if a.verdict:
+        r["verdict"] = a.verdict
+    if a.notes:
+        r["notes"] = a.notes
+    return r
+
+
 def cmd_done(a):
-    s = _store(a).state()
-    body = {"task": _store(a).resolve(a.task_id, s.tasks), "outcome": a.outcome, "summary": a.summary or ""}
+    store = _store(a)
+    s = store.state()
+    body = {"task": store.resolve(a.task_id, s.tasks), "outcome": a.outcome, "summary": a.summary or ""}
+    report = _report_from_args(a)
+    if report:
+        body["report"] = report
     return _emit(a, "done", body)
 
 
+def cmd_assign(a):
+    from . import network
+    s = _store(a).state()
+    now = time.time()
+    picks = network.assign(s, s.policy, now)
+    present = [m for m in s.members() if m.present(now)]
+    print(f"{len(present)} member(s) present: " + ", ".join(
+        f"{m.name} ({len(m.offer.get('models', []))} models, {m.offer.get('slots', 0)} slots)" for m in present))
+    for t in s.open_tasks(now):
+        p = picks.get(t.id)
+        print(f"{t.id[:12]} [{t.kind} L{t.level} {t.tier}] {t.title}  ->  "
+              + (f"{p.member} with {p.model} ({p.tier})" if p else "nobody fits right now"))
+    return 0
+
+
 def cmd_run(a):
-    run = runner.Run(_store(a), _actor(a), a.task_id)
+    """Run one package the network assigned to this machine, now, in the foreground."""
+    from . import network, runner
+    store = _store(a)
+    me = _actor(a)
+    cfg = _ws().machine()
+    p = _probe(a)
+    s = store.state()
+    now = time.time()
+    picks = network.assign(s, s.policy, now)
+    mine = [(pid, pk) for pid, pk in picks.items() if pk.member == me]
+    if a.task_id:
+        pid = store.resolve(a.task_id, s.tasks)
+        mine = [(x, pk) for x, pk in mine if x == pid]
+        if not mine:
+            print(network.why_not(s, s.policy, now, pid, me))
+            return 1
+    if not mine:
+        print(f"the network has nothing for {me} right now (is it present? `baton offer`)")
+        return 1
+    pid, pick = sorted(mine, key=lambda kv: s.tasks[kv[0]].created)[0]
+    run = runner.Run(store, me, pid, pick.model, p, cfg)
     if a.dry_run:
         print(" ".join(repr(x) if " " in x or "\n" in x else x for x in run.command()))
         return 0
-    return 0 if run.go(timeout=pol.duration(a.timeout) if a.timeout else None) == "done" else 1
+    out = run.go(timeout=pol.duration(a.timeout) if a.timeout else None)
+    return 0 if out in ("done", "checking", "waiting") else 1
 
 
+def cmd_swarm(a):
+    from . import swarm
+    store = _store(a)
+    ws = _ws()
+    cfg = ws.machine()
+    if a.slots is not None:
+        cfg = {**cfg, "slots": a.slots}
+    me = _actor(a)
+    s = store.state()
+    p = _probe(a)
+    if me not in s.actors:
+        from . import machine as mc
+        o = mc.offer(p, cfg, store.policy().presence_ttl)
+        if s.join_mode != "open":
+            sys.exit(f"baton: this project takes members by application: `baton volunteer <project>` as {me} first")
+        e = store.append("join", me, {"offer": o})
+        if e.id in store.state().ignored:
+            sys.exit(f"baton: could not join: {store.state().ignored[e.id]}")
+        print(f"{me} joined")
+    logs = Path(a.transcripts) if a.transcripts else store.home / "runs"
+    sw = swarm.Swarm(store, me, cfg, p, max_runs=a.max_runs, timeout=pol.duration(a.timeout) if a.timeout else None,
+                     once=a.once, interval=pol.duration(a.interval), sync_every=pol.duration(a.sync) if a.sync else None,
+                     transcripts=logs, log=lambda line: print(time.strftime("%H:%M:%S ") + line, flush=True))
+    results = swarm.serve(sw)
+    print(f"swarm: {len(results)} run(s); transcripts in {logs}")
+    return 0
+
+
+# -- leases, checks, the gate -----------------------------------------------------------------------------------------
 def cmd_claim(a):
+    store = _store(a)
     if a.task_id:
-        s = _store(a).state()
-        return _emit(a, "claim", {"task_id": _store(a).resolve(a.task_id, s.tasks)})
+        s = store.state()
+        body = {"task_id": store.resolve(a.task_id, s.tasks)}
+        if a.model:
+            body["model"] = a.model
+        return _emit(a, "claim", body)
     if not a.task:
         sys.exit("baton: claim needs a description or --task-id")
     body = {"task": a.task, "paths": a.path or [], "topics": a.topic or []}
     if a.ttl:
         body["ttl"] = pol.duration(a.ttl)
-    store = _store(a)
     clash = store.state().conflicts(tuple(body["paths"]), tuple(body["topics"]), time.time(), actor=_actor(a))
     if clash:
         for l in clash:
@@ -185,26 +462,23 @@ def cmd_execute(a):
 
 
 def cmd_status(a):
+    from . import network
     store = _store(a)
     ordered, held, bad = store.load()
     s = store.state()
     now = time.time()
-
-    def tree(name, depth):
-        x = s.actors[name]
-        tier = f" {x.model} effort={x.effort}" if x.model else ""
-        print(f"{'  ' * depth}{name} [{x.role}]{tier}")
-        for c in x.children:
-            tree(c, depth + 1)
-
     print(f"{len(ordered)} events" + (f", {len(held)} held back" if held else "") + (f", {len(bad)} bad files" if bad else ""))
-    print("tree:")
-    for name, x in s.actors.items():
-        if x.parent is None:
-            tree(name, 1)
+    print("members:")
+    used = network.load(s, now)
+    for m in s.members():
+        o = m.offer
+        here = f"present, {used.get(m.name, 0)}/{o.get('slots', 0)} slots busy" if m.present(now) else \
+            (f"last seen {_ago(now - m.offer_at)} ago" if m.offer_at else "never offered")
+        models = ", ".join(f"{x['id']} ({x['tier']})" for x in o.get("models", []))
+        print(f"  {m.name}: {here}" + (f" — {models}" if models else ""))
     print("leases:")
     for l in s.active_leases(now):
-        print(f"  {l.id[:12]} {l.actor}: {l.task} [{', '.join(l.paths + l.topics)}] {int(l.expiry - now)}s left")
+        print(f"  {l.id[:12]} {l.actor} {l.model}: {l.task} [{', '.join(l.paths + l.topics)}] {int(l.expiry - now)}s left")
     print("proposals:")
     for p in s.proposals.values():
         if a.all or p.status in ("pending", "approved"):
@@ -212,10 +486,22 @@ def cmd_status(a):
     return 0
 
 
+def cmd_whoami(a):
+    s = _store(a).state()
+    me = _actor(a)
+    x = s.actors.get(me)
+    if x is None:
+        print(f"{me}: not a member")
+        return 1
+    print(json.dumps({"actor": x.name, "kind": x.kind, "present": x.present(time.time()), "offer": x.offer}))
+    return 0
+
+
+# -- talk ------------------------------------------------------------------------------------------------------------
 def _show(m, s, now) -> str:
     where = f"[{_task_title(s, m.task)}] " if m.task else ""
     to = f" -> {m.to}" if m.to else ""
-    return f"{m.id[:12]} {_ago(now - m.ts):>4} {m.actor}{to}: {where}{m.text}"
+    return f"{m.id[:12]} {_ago(now - m.ts):>4} {m.actor}{to}{' asks' if m.ask else ''}: {where}{m.text}"
 
 
 def _task_title(s, task_id):
@@ -223,13 +509,8 @@ def _task_title(s, task_id):
     return (t.title[:40] if t else "?") + f" {task_id[:8]}"
 
 
-def _ago(sec: float) -> str:
-    sec = max(0, int(sec))
-    return f"{sec}s" if sec < 60 else f"{sec // 60}m" if sec < 3600 else f"{sec // 3600}h" if sec < 86400 else f"{sec // 86400}d"
-
-
 def cmd_message(a):
-    """Say something in the log: in a task's thread, to one member, or as a reply. With --wait, block for the answer."""
+    """Say something in the log: in a package's thread, to one member, or as a reply. --ask waits for a reply."""
     store = _store(a)
     s = store.state()
     body = {"text": a.text if a.text != "-" else sys.stdin.read()}
@@ -241,6 +522,8 @@ def cmd_message(a):
     if a.reply:
         body["reply_to"] = store.resolve(a.reply, s.messages)
         body.pop("task", None)
+    if a.ask or a.wait:
+        body["ask"] = True
     me = _actor(a)
     e = store.append("message", me, body)
     code, text = _outcome(store, e)
@@ -250,9 +533,7 @@ def cmd_message(a):
     deadline = time.time() + pol.duration(a.wait)
     while time.time() < deadline:
         s = store.state()
-        mine = s.messages.get(e.id)
-        answers = [m for m in s.messages.values() if m.actor != me and m.seq > mine.seq
-                   and (m.reply_to == e.id or (mine.task and m.task == mine.task) or (m.to == me and not m.task))]
+        answers = [m for m in s.messages.values() if m.reply_to == e.id]
         if answers:
             for m in answers:
                 print(_show(m, s, time.time()))
@@ -267,7 +548,7 @@ def cmd_inbox(a):
     now = time.time()
     got = s.inbox(_actor(a), unanswered=not a.all)
     if a.json:
-        print(json.dumps([{"id": m.id, "actor": m.actor, "text": m.text, "task": m.task, "to": m.to,
+        print(json.dumps([{"id": m.id, "actor": m.actor, "text": m.text, "task": m.task, "to": m.to, "ask": m.ask,
                            "reply_to": m.reply_to, "ts": m.ts} for m in got], ensure_ascii=False))
         return 0
     for m in got:
@@ -289,55 +570,9 @@ def cmd_thread(a):
     return 0
 
 
-def cmd_swarm(a):
-    from . import swarm
-    store = _store(a)
-    seats = list(a.seat or [])
-    for spec in a.spawn or []:   # role=count[:parent]
-        role, _, rest = spec.partition("=")
-        count, _, parent = rest.partition(":")
-        s = store.state()
-        if role not in store.policy().roles:
-            sys.exit(f"baton: unknown role {role!r}")
-        for i in range(1, int(count or 1) + 1):
-            name = f"{a.prefix}-{role}-{i}"
-            if name not in s.actors:
-                if s.join_mode != "open":
-                    sys.exit(f"baton: this project takes members by application; `baton volunteer` {name} first")
-                e = store.append("join", name, {"role": role, "parent": parent or None})
-                s = store.state()
-                if e.id in s.ignored:
-                    sys.exit(f"baton: {name} could not join: {s.ignored[e.id]}")
-                print(f"{name} joined as {role} under {parent}")
-            seats.append(name)
-    if not seats:
-        sys.exit("baton: name the agents this machine runs with --seat NAME, or --spawn role=count:parent")
-    logs = Path(a.transcripts) if a.transcripts else store.home / "runs"
-    sw = swarm.Swarm(store, seats, parallel=a.parallel, max_runs=a.max_runs, max_attempts=a.max_attempts,
-                     timeout=pol.duration(a.timeout) if a.timeout else None, once=a.once,
-                     interval=pol.duration(a.interval), sync_every=pol.duration(a.sync) if a.sync else None,
-                     transcripts=logs, log=lambda line: print(time.strftime("%H:%M:%S ") + line, flush=True))
-    results = swarm.serve(sw)
-    bad = sum(1 for _, _, o in results if o not in ("done",))
-    print(f"swarm: {len(results)} run(s), {bad} not done; transcripts in {logs}")
-    return 0
-
-
-def cmd_whoami(a):
-    s = _store(a).state()
-    x = s.actors.get(_actor(a))
-    if x is None:
-        print("not joined")
-        return 1
-    print(json.dumps({"actor": x.name, "role": x.role, "parent": x.parent, "model": x.model, "effort": x.effort,
-                      "children": x.children}))
-    return 0
-
-
 def cmd_ui(a):
     from . import ui
-    from .workspace import Workspace
-    ui.serve(Workspace(), a.actor or os.environ.get("BATON_ACTOR"), port=a.port, open_browser=not a.no_open,
+    ui.serve(_ws(), a.actor or os.environ.get("BATON_ACTOR"), port=a.port, open_browser=not a.no_open,
              extra_home=Path(a.home), sync_every=pol.duration(a.sync) if a.sync else None)
     return 0
 
@@ -357,7 +592,7 @@ def _project_fields(a) -> dict:
         f["tags"] = a.tag
     if getattr(a, "need", None):
         needs = []
-        for spec in a.need:   # role[:skill,skill][@hardware,hardware][*count]
+        for spec in a.need:   # [tier][:skill,skill][@hardware,hardware][*count]
             count = None
             if "*" in spec:
                 spec, count = spec.rsplit("*", 1)
@@ -365,8 +600,10 @@ def _project_fields(a) -> dict:
             if "@" in spec:
                 spec, h = spec.split("@", 1)
                 hw = [x for x in h.split(",") if x]
-            role, _, sk = spec.partition(":")
-            n = {"role": role, "skills": [x for x in sk.split(",") if x]}
+            tier, _, sk = spec.partition(":")
+            n = {"skills": [x for x in sk.split(",") if x]}
+            if tier:
+                n["tier"] = tier
             if hw:
                 n["hardware"] = hw
             if count:
@@ -377,7 +614,7 @@ def _project_fields(a) -> dict:
 
 
 def cmd_project(a):
-    from .workspace import Workspace, manifest_of, publish
+    from .workspace import manifest_of, publish
     store = _store(a)
     if a.action in ("create", "set"):
         s = store.state()
@@ -388,7 +625,7 @@ def cmd_project(a):
         code = _emit(a, "project", _project_fields(a))
         s = store.state()
         if code == 0 and a.action == "create":
-            Workspace().add_project(s.project_id, store.home, trusted=True)
+            _ws().add_project(s.project_id, store.home, trusted=True)
             print(f"project {s.project_id} created and added to your workspace")
         return code
     if a.action == "link":
@@ -411,8 +648,7 @@ def cmd_project(a):
 
 
 def cmd_catalog(a):
-    from .workspace import Workspace
-    ws = Workspace()
+    ws = _ws()
     if a.action == "add":
         ws.add_catalog(a.source)
     elif a.action == "remove":
@@ -428,27 +664,26 @@ def cmd_catalog(a):
 
 
 def cmd_discover(a):
-    from .workspace import Workspace
-    entries, problems = Workspace().discover()
+    entries, problems = _ws().discover()
     for e in entries:
         m = e["manifest"]
         if a.tag and not set(a.tag) <= set(m.get("tags", [])):
             continue
-        needs = ", ".join(n["role"] + (":" + "/".join(n.get("skills", [])) if n.get("skills") else "") for n in m.get("needs", []))
+        needs = ", ".join((n.get("tier") or "any") + (":" + "/".join(n.get("skills", [])) if n.get("skills") else "")
+                          for n in m.get("needs", []))
         act = m.get("activity", {})
         print(f"{m['id'][:12]} {m['name']}  [{'local' if e['local'] else ', '.join(e['sources'])}] join={m.get('join', 'apply')}")
         if m.get("summary"):
             print(f"    {m['summary']}")
         if needs or act:
-            print(f"    needs: {needs or '-'}" + (f"   open tasks: {act.get('open_tasks')}, agents: {act.get('agents')}" if act else ""))
+            print(f"    needs: {needs or '-'}" + (f"   open: {act.get('open_tasks')}, machines present: {act.get('present')}" if act else ""))
     for p in problems:
         print(f"! {p}", file=sys.stderr)
     return 0
 
 
 def _find_manifest(project: str):
-    from .workspace import Workspace
-    entries, _ = Workspace().discover()
+    entries, _ = _ws().discover()
     hits = [e for e in entries if e["manifest"]["id"].startswith(project)]
     if len(hits) != 1:
         raise KeyError(f"{project!r} matches {len(hits)} known projects")
@@ -456,13 +691,15 @@ def _find_manifest(project: str):
 
 
 def cmd_volunteer(a):
-    offer = {}
-    for k in ("skill", "model", "hardware"):
-        if getattr(a, k):
-            offer[k + ("s" if k != "hardware" else "")] = getattr(a, k)
-    from .workspace import Workspace, volunteer
-    out = volunteer(Workspace(), _find_manifest(a.project), _actor(a), a.role, a.parent, offer, a.note or "")
-    print(f"applied ({out['event'][:12]}); log at {out['home']}\n{out['deliver']}")
+    from .workspace import volunteer
+    from . import machine as mc
+    entry = _find_manifest(a.project)
+    o = mc.offer(_probe(a), _ws().machine(), 180.0)
+    if not o["models"]:
+        sys.exit("baton: this machine offers no model yet: `baton machine allow <provider:model>`")
+    out = volunteer(_ws(), entry, _actor(a), o, a.note or "")
+    print(f"applied ({out['event'][:12]}) as {_actor(a)} offering {len(o['models'])} model(s) and {o['slots']} slot(s); "
+          f"log at {out['home']}\n{out['deliver']}")
     return 0
 
 
@@ -470,19 +707,15 @@ def cmd_applications(a):
     s = _store(a).state()
     for x in s.applications.values():
         if a.all or x.status == "pending":
-            print(f"{x.actor} {x.status} as {x.role}" + (f" under {x.parent}" if x.parent else "")
-                  + (f" offer={json.dumps(x.offer)}" if x.offer else "") + (f" : {x.note}" if x.note else ""))
+            models = ", ".join(m["id"] for m in x.offer.get("models", []))
+            print(f"{x.actor} {x.status}" + (f" offering {models} ({x.offer.get('slots', 0)} slots)" if models else "")
+                  + (f" : {x.note}" if x.note else ""))
     return 0
 
 
 def cmd_admit(a):
     body = {"applicant": a.applicant}
-    if a.cmd == "admit":
-        if a.role:
-            body["role"] = a.role
-        if a.parent:
-            body["parent"] = a.parent
-    elif a.reason:
+    if a.cmd == "decline" and a.reason:
         body["reason"] = a.reason
     return _emit(a, a.cmd, body)
 
@@ -502,14 +735,7 @@ def cmd_export_event(a):
 
 
 def cmd_workspace(a):
-    from .workspace import Workspace
-    ws = Workspace()
-    if a.action == "runner":
-        cmd = [x for x in a.command if x != "--"]
-        if cmd:
-            ws.set_runner(cmd)
-        print(json.dumps(ws.runner()))
-        return 0
+    ws = _ws()
     print(json.dumps({"dir": str(ws.dir), **ws.load()}, indent=1))
     return 0
 
@@ -534,25 +760,51 @@ def cmd_sync(a):
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="baton", description=__doc__.split("\n\n")[0])
     ap.add_argument("--home", default=os.environ.get("BATON_HOME", ".baton"), help="the log folder (BATON_HOME)")
-    ap.add_argument("--actor", help="who acts (BATON_ACTOR)")
+    ap.add_argument("--actor", help="who acts (BATON_ACTOR; default: this machine's member name)")
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("init").set_defaults(fn=cmd_init)
-    p = sub.add_parser("join"); p.add_argument("role"); p.add_argument("--parent"); p.set_defaults(fn=cmd_join)
-    p = sub.add_parser("task", help="post a task to the board"); p.add_argument("title"); p.add_argument("--detail")
+
+    p = sub.add_parser("machine", help="this machine: hardware, agents, models; choose what it offers")
+    p.add_argument("action", nargs="?", default="show", choices=("show", "allow", "deny", "tier", "slots", "name", "cmd", "hardware"))
+    p.add_argument("args", nargs=argparse.REMAINDER)
+    p.add_argument("--json", action="store_true"); p.add_argument("--limits", action="store_true", help="also read usage limits")
+    p.set_defaults(fn=cmd_machine)
+    sub.add_parser("join", help="join an open project with this machine").set_defaults(fn=cmd_join)
+    sub.add_parser("offer", help="announce this machine's offer now (a swarm does it by itself)").set_defaults(fn=cmd_offer)
+
+    p = sub.add_parser("task", aliases=["package"], help="post a work package")
+    p.add_argument("title", nargs="?"); p.add_argument("--file", help="a work package JSON file (spec/schemas/package.schema.json)")
+    p.add_argument("--kind", choices=pol.KINDS); p.add_argument("--goal"); p.add_argument("--context"); p.add_argument("--detail")
     p.add_argument("--path", action="append"); p.add_argument("--topic", action="append")
-    p.add_argument("--role", help="only this role may take it"); p.add_argument("--parent", help="split from this task")
+    p.add_argument("--accept", action="append", help="an acceptance criterion"); p.add_argument("--check", action="append", help="name=command")
+    p.add_argument("--deliverable", action="append"); p.add_argument("--constraint", action="append"); p.add_argument("--input", action="append")
+    p.add_argument("--size", choices=("S", "M", "L", "XL")); p.add_argument("--tier", choices=pol.TIERS)
+    p.add_argument("--hardware", action="append"); p.add_argument("--parent"); p.add_argument("--depends-on", action="append")
     p.set_defaults(fn=cmd_task)
-    p = sub.add_parser("tasks", help="the board"); p.add_argument("--all", action="store_true"); p.set_defaults(fn=cmd_tasks)
-    p = sub.add_parser("done", help="report how a task you hold ended"); p.add_argument("task_id")
-    p.add_argument("--outcome", choices=("done", "failed", "escalated"), default="done"); p.add_argument("--summary")
+    p = sub.add_parser("tasks", help="the package tree"); p.add_argument("--all", action="store_true"); p.set_defaults(fn=cmd_tasks)
+    p = sub.add_parser("show", help="one package, with its runs and report"); p.add_argument("task_id"); p.set_defaults(fn=cmd_show)
+    p = sub.add_parser("done", help="report how a package you hold ended"); p.add_argument("task_id")
+    p.add_argument("--outcome", choices=("done", "split", "failed", "escalated"), default="done"); p.add_argument("--summary")
+    p.add_argument("--change", action="append", help="a path you changed"); p.add_argument("--check", action="append", help="name=passed|failed|not_run[:command]")
+    p.add_argument("--verification", choices=("passed", "failed", "not_run")); p.add_argument("--finding", action="append", help="severity:text[@path[:line]]")
+    p.add_argument("--verdict", choices=("passed", "changes_requested")); p.add_argument("--notes"); p.add_argument("--report", help="a report JSON file")
     p.set_defaults(fn=cmd_done)
-    p = sub.add_parser("run", help="take a task and run the policy's agent on it")
-    p.add_argument("task_id", nargs="?", help="default: the oldest open task for your role")
-    p.add_argument("--dry-run", action="store_true", help="print the agent command and take nothing")
-    p.add_argument("--timeout", help="e.g. 30m"); p.set_defaults(fn=cmd_run)
-    p = sub.add_parser("claim"); p.add_argument("task", nargs="?"); p.add_argument("--task-id")
-    p.add_argument("--path", action="append")
-    p.add_argument("--topic", action="append"); p.add_argument("--ttl"); p.set_defaults(fn=cmd_claim)
+    sub.add_parser("assign", help="what the network gives to whom right now").set_defaults(fn=cmd_assign)
+    p = sub.add_parser("run", help="run one package the network gave this machine")
+    p.add_argument("task_id", nargs="?"); p.add_argument("--dry-run", action="store_true"); p.add_argument("--timeout")
+    p.set_defaults(fn=cmd_run)
+    p = sub.add_parser("swarm", help="take part in the project with this machine until stopped")
+    p.add_argument("--slots", type=int, help="packages at once (default: `baton machine slots`)")
+    p.add_argument("--max-runs", type=int, default=20, help="stop after this many agent runs (0: no limit)")
+    p.add_argument("--timeout", default="30m", help="per agent run"); p.add_argument("--interval", default="3s")
+    p.add_argument("--sync", help="sync with the git remote this often, e.g. 15s")
+    p.add_argument("--once", action="store_true", help="stop when nothing is left for this machine")
+    p.add_argument("--transcripts", help="where agent output is kept (default: <home>/runs)")
+    p.set_defaults(fn=cmd_swarm)
+
+    p = sub.add_parser("claim"); p.add_argument("task", nargs="?"); p.add_argument("--task-id"); p.add_argument("--model")
+    p.add_argument("--path", action="append"); p.add_argument("--topic", action="append"); p.add_argument("--ttl")
+    p.set_defaults(fn=cmd_claim)
     for name, fn in (("renew", cmd_renew), ("release", cmd_release)):
         p = sub.add_parser(name); p.add_argument("lease"); p.set_defaults(fn=fn)
     p = sub.add_parser("check"); p.add_argument("--path", action="append"); p.add_argument("--topic", action="append")
@@ -568,26 +820,17 @@ def main(argv=None) -> int:
     p.set_defaults(fn=cmd_execute)
     p = sub.add_parser("status"); p.add_argument("--all", action="store_true"); p.set_defaults(fn=cmd_status)
     sub.add_parser("whoami").set_defaults(fn=cmd_whoami)
-    p = sub.add_parser("swarm", help="keep this machine's agents working: answer, re-plan and take tasks")
-    p.add_argument("--seat", action="append", help="a member this machine runs (repeat)")
-    p.add_argument("--spawn", action="append", help="role=count[:parent]: join and run that many new agents")
-    p.add_argument("--prefix", default="swarm", help="names for --spawn agents: <prefix>-<role>-<n>")
-    p.add_argument("--parallel", type=int, default=2, help="task runs at once (attending does not count)")
-    p.add_argument("--max-runs", type=int, default=20, help="stop after this many agent runs (0: no limit)")
-    p.add_argument("--max-attempts", type=int, default=2, help="runs per task before this swarm gives up on it")
-    p.add_argument("--timeout", default="30m", help="per agent run"); p.add_argument("--interval", default="3s")
-    p.add_argument("--sync", help="sync with the git remote this often, e.g. 15s")
-    p.add_argument("--once", action="store_true", help="stop when nothing is running and nothing is left")
-    p.add_argument("--transcripts", help="where agent output is kept (default: <home>/runs)")
-    p.set_defaults(fn=cmd_swarm)
-    p = sub.add_parser("message", help="talk in the log: a task thread, one member, or a reply")
+
+    p = sub.add_parser("message", help="talk in the log: a package thread, one member, or a reply")
     p.add_argument("text", help='the message, or "-" to read it from stdin')
-    p.add_argument("--task", help="the task thread (default inside a run: BATON_TASK)")
+    p.add_argument("--task", help="the package thread (default inside a run: BATON_TASK)")
     p.add_argument("--to", help="one member"); p.add_argument("--reply", help="the message id you answer")
-    p.add_argument("--wait", help="then wait this long for an answer, e.g. 10m"); p.set_defaults(fn=cmd_message)
-    p = sub.add_parser("inbox", help="messages waiting for your answer"); p.add_argument("--all", action="store_true")
+    p.add_argument("--ask", action="store_true", help="a question: it waits in the inbox until someone replies")
+    p.add_argument("--wait", help="ask, then wait this long for the reply, e.g. 10m"); p.set_defaults(fn=cmd_message)
+    p = sub.add_parser("inbox", help="messages waiting for an answer"); p.add_argument("--all", action="store_true")
     p.add_argument("--json", action="store_true"); p.set_defaults(fn=cmd_inbox)
-    p = sub.add_parser("thread", help="a task and its messages"); p.add_argument("task_id"); p.set_defaults(fn=cmd_thread)
+    p = sub.add_parser("thread", help="a package and its messages"); p.add_argument("task_id"); p.set_defaults(fn=cmd_thread)
+
     p = sub.add_parser("project", help="create, change, link and publish this log's project")
     p.add_argument("action", choices=("create", "set", "show", "link", "publish"))
     p.add_argument("catalog", nargs="?", help="publish: the catalog file to add the manifest to")
@@ -596,7 +839,7 @@ def main(argv=None) -> int:
     p.add_argument("--join", choices=mf.JOIN_MODES); p.add_argument("--log-git"); p.add_argument("--log-branch")
     p.add_argument("--inbox", help="where applications are sent: a git URL or an http(s) URL")
     p.add_argument("--tag", action="append")
-    p.add_argument("--need", action="append", help="role[:skill,skill][@hardware][*count], e.g. worker:python,c@gpu*3")
+    p.add_argument("--need", action="append", help="[tier][:skill,skill][@hardware][*count], e.g. strong:python@gpu*3")
     p.add_argument("--rel", choices=mf.RELS, default="related")
     p.add_argument("--link-project", help="link: the other project's id"); p.add_argument("--link-manifest")
     p.add_argument("--link-name")
@@ -606,25 +849,19 @@ def main(argv=None) -> int:
     p.add_argument("--name"); p.add_argument("--description"); p.set_defaults(fn=cmd_catalog)
     p = sub.add_parser("discover", help="every project your workspace and catalogs know")
     p.add_argument("--tag", action="append"); p.set_defaults(fn=cmd_discover)
-    p = sub.add_parser("volunteer", help="apply to help a project, as one of your agents")
-    p.add_argument("project", help="project id prefix"); p.add_argument("--role", default="worker")
-    p.add_argument("--parent"); p.add_argument("--skill", action="append"); p.add_argument("--model", action="append")
-    p.add_argument("--hardware", action="append"); p.add_argument("--note"); p.set_defaults(fn=cmd_volunteer)
+    p = sub.add_parser("volunteer", help="apply to help a project with this machine")
+    p.add_argument("project", help="project id prefix"); p.add_argument("--note"); p.set_defaults(fn=cmd_volunteer)
     p = sub.add_parser("applications"); p.add_argument("--all", action="store_true"); p.set_defaults(fn=cmd_applications)
     for name in ("admit", "decline"):
         p = sub.add_parser(name); p.add_argument("applicant")
-        if name == "admit":
-            p.add_argument("--role"); p.add_argument("--parent")
-        else:
+        if name == "decline":
             p.add_argument("--reason")
         p.set_defaults(fn=cmd_admit)
     p = sub.add_parser("import", help="take in event files sent by other means"); p.add_argument("files", nargs="+")
     p.set_defaults(fn=cmd_import)
     p = sub.add_parser("export-event"); p.add_argument("event"); p.set_defaults(fn=cmd_export_event)
-    p = sub.add_parser("workspace", help="show the workspace, or set your own agent command")
-    p.add_argument("action", nargs="?", choices=("show", "runner"), default="show")
-    p.add_argument("command", nargs=argparse.REMAINDER); p.set_defaults(fn=cmd_workspace)
-    p = sub.add_parser("ui", help="a local dashboard; approve and reject from the browser")
+    sub.add_parser("workspace", help="show the workspace file").set_defaults(fn=cmd_workspace)
+    p = sub.add_parser("ui", help="a local dashboard: projects, this machine, approvals")
     p.add_argument("--port", type=int, default=8765); p.add_argument("--no-open", action="store_true")
     p.add_argument("--sync", help="also sync every local log that has a git remote this often, e.g. 15s")
     p.set_defaults(fn=cmd_ui)

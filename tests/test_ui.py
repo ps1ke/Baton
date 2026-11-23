@@ -13,12 +13,14 @@ from baton import ui
 from baton.store import Store
 from baton.workspace import Workspace, manifest_of, publish
 
-T0 = 1_000_000.0
-POLICY = pol.DEFAULT.replace('humans = []', 'humans = ["human:ana"]')
+from helpers import FABLE, POLICY, SONNET, T0, fake_probe, offer
 
 
 class UiTests(unittest.TestCase):
     def setUp(self):
+        self.probe = mock.patch.object(ui, "_probe", lambda fresh=False, limits=False: fake_probe("claude"))
+        self.probe.start()
+        self.addCleanup(self.probe.stop)
         self.tmp = tempfile.TemporaryDirectory()
         root = Path(self.tmp.name)
         self.env = mock.patch.dict(os.environ, {"BATON_WORKSPACE": str(root / "ws")})
@@ -29,12 +31,11 @@ class UiTests(unittest.TestCase):
         (self.s.home / "policy.toml").write_text(POLICY, encoding="utf-8")
         a = self.s.append
         a("project", "human:ana", {"name": "toy", "summary": "<b>not bold</b>", "join": "open",
-                                   "needs": [{"role": "worker", "skills": ["python"]}]}, T0)
-        a("join", "p", {"role": "planner", "parent": "human:ana"}, T0 + 1)
-        a("join", "o", {"role": "orchestrator", "parent": "p"}, T0 + 2)
-        a("join", "w1", {"role": "worker", "parent": "o"}, T0 + 3)
+                                   "needs": [{"tier": "standard", "skills": ["python"]}]}, T0)
+        a("join", "o", {"offer": offer(FABLE)}, T0 + 2)
+        a("join", "w1", {"offer": offer(SONNET)}, T0 + 3)
         a("project", "human:ana", {"join": "apply"}, T0 + 4)
-        self.task = a("task", "o", {"title": "fix parser", "paths": ["src"]}, T0 + 5)
+        self.task = a("task", "human:ana", {"title": "fix parser", "paths": ["src"]}, T0 + 5)
         a("claim", "w1", {"task_id": self.task.id, "ttl": 10**6}, T0 + 6)
         self.prop = a("propose", "w1", {"action": "comment", "target": "#7",
                                         "payload": {"repo": "o/r", "body": "<script>x</script>"}}, T0 + 7)
@@ -76,7 +77,9 @@ class UiTests(unittest.TestCase):
 
     def test_snapshot_shows_board_leases_tree_gate_and_manifest(self):
         snap = ui.snapshot(self.s, now=T0 + 10)
-        self.assertEqual([(t["title"], t["status"], t["holder"]) for t in snap["tasks"]], [("fix parser", "taken", "w1")])
+        self.assertEqual([(t["title"], t["status"], t["holder"], t["kind"], t["model"]) for t in snap["tasks"]],
+                         [("fix parser", "taken", "w1", "implement", "claude:claude-sonnet-5-5")])
+        self.assertEqual({m["name"]: (m["present"], m["busy"]) for m in snap["members"]}, {"o": (True, 0), "w1": (True, 1)})
         self.assertEqual(sorted(p["status"] for p in snap["proposals"]), ["duplicate", "pending"])
         self.assertEqual((snap["manifest"]["name"], snap["join"]), ("toy", "apply"))
         self.assertEqual(mf.check_manifest(snap["manifest"]), [])
@@ -117,15 +120,20 @@ class UiTests(unittest.TestCase):
     def test_volunteer_admit_and_link(self):
         port, token = self.start("human:ana")
         h = {"X-Baton-Token": token}
-        status, d = self.call(port, "POST", "/api/volunteer", {"project": self.pid, "actor": "helper-1", "role": "worker",
-                                                               "parent": "o", "skills": "python, c", "note": "hi"}, h)
+        status, d = self.call(port, "POST", "/api/volunteer", {"project": self.pid, "actor": "helper-1", "note": "hi"}, h)
+        self.assertEqual(status, 400)                                        # no model allowed on this machine yet
+        self.assertIn("offers no model", d["error"])
+        self.ws.set_machine(allowed=["claude:claude-haiku-5-5"], slots=3)
+        status, d = self.call(port, "POST", "/api/volunteer", {"project": self.pid, "actor": "helper-1", "role": "orchestrator",
+                                                               "note": "hi"}, h)
         self.assertEqual(status, 200, d)
         self.assertIn("deliver", d)
         app = list(self.s.state().applications.values())[0]
-        self.assertEqual((app.actor, app.offer), ("helper-1", {"skills": ["python", "c"]}))
+        self.assertEqual((app.actor, app.offer["slots"], [m["id"] for m in app.offer["models"]]),
+                         ("helper-1", 3, ["claude:claude-haiku-5-5"]))              # the role asked for is ignored
         status, d = self.call(port, "POST", f"/api/p/{self.pid}/decide", {"decision": "admit", "applicant": "helper-1"}, h)
         self.assertEqual(status, 200, d)
-        self.assertEqual(self.s.state().actors["helper-1"].parent, "o")
+        self.assertEqual(self.s.state().actors["helper-1"].kind, "member")
         bad = self.call(port, "POST", "/api/volunteer", {"project": self.pid, "actor": "human:x"}, h)
         self.assertEqual(bad[0], 400)
         status, d = self.call(port, "POST", f"/api/p/{self.pid}/link",
@@ -139,7 +147,7 @@ class UiTests(unittest.TestCase):
         q = self.s.append("message", "w1", {"text": "<i>which file?</i>", "task": self.task.id}, T0 + 9)
         self.s.append("message", "w1", {"text": "hello ana", "to": "human:ana"}, T0 + 10)
         snap = ui.snapshot(self.s, now=T0 + 11, me="human:ana")
-        self.assertEqual(len(snap["inbox"]), 1)                       # addressed to ana; the task is o's
+        self.assertEqual(len(snap["inbox"]), 2)                       # one addressed to ana, one on her package
         self.assertEqual(snap["messages"][0]["text"], "<i>which file?</i>")
         self.assertTrue(any(f["kind"] == "message" for f in snap["feed"]))
         port, token = self.start("human:ana")
@@ -151,6 +159,21 @@ class UiTests(unittest.TestCase):
         self.assertEqual(status, 400)
         port2, token2 = self.start("human:zed")
         self.assertEqual(self.call(port2, "POST", f"/api/p/{self.pid}/message", {"text": "hi"}, {"X-Baton-Token": token2})[0], 403)
+
+    def test_machine_page_shows_the_probe_and_saves_choices(self):
+        port, token = self.start(None)                                       # machine settings need no project actor
+        status, d = self.call(port, "GET", "/api/machine")
+        self.assertEqual(status, 200)
+        self.assertIn("claude:claude-sonnet-5-5", [m["ref"] for m in d["models"]])
+        self.assertEqual(self.call(port, "POST", "/api/machine", {"slots": 2})[0], 403)   # no token
+        status, d = self.call(port, "POST", "/api/machine", {"allowed": ["claude:claude-sonnet-5-5"], "slots": 2,
+                                                             "tiers": {"claude:claude-sonnet-5-5": "strong"}},
+                              {"X-Baton-Token": token})
+        self.assertEqual(status, 200, d)
+        self.assertEqual(d["offer"]["slots"], 2)
+        self.assertEqual(d["offer"]["models"], [{"id": "claude:claude-sonnet-5-5", "tier": "strong", "family": "claude"}])
+        status, d = self.call(port, "POST", "/api/machine", {"tiers": {"x": "huge"}}, {"X-Baton-Token": token})
+        self.assertEqual(status, 400)
 
     def test_catalogs_can_be_added_and_read_only_mode(self):
         port, token = self.start(None)

@@ -13,8 +13,7 @@ from baton import runner
 from baton.store import Store
 from baton.workspace import Workspace, manifest_of, publish
 
-T0 = 1_000_000.0
-POLICY = pol.DEFAULT.replace('humans = []', 'humans = ["human:ana"]')
+from helpers import POLICY, SONNET, T0, offer
 
 
 def make_project(root: Path, name="toy", **fields) -> Store:
@@ -22,7 +21,7 @@ def make_project(root: Path, name="toy", **fields) -> Store:
     s.init()
     (s.home / "policy.toml").write_text(POLICY, encoding="utf-8")
     s.append("project", "human:ana", {"name": name, "summary": "a toy", "tags": ["python"],
-                                     "needs": [{"role": "worker", "skills": ["python"], "count": 2}], **fields}, T0)
+                                     "needs": [{"tier": "standard", "skills": ["python"], "count": 2}], **fields}, T0)
     return s
 
 
@@ -52,9 +51,9 @@ class ProjectTests(Base):
         self.p.append("project", "human:ana", {"summary": "better", "join": "open", "tags": None}, T0 + 1)
         s = self.p.state()
         self.assertEqual((s.project["summary"], s.project["join"], "tags" in s.project), ("better", "open", False))
-        self.p.append("join", "plan", {"role": "planner", "parent": "human:ana"}, T0 + 2)
+        self.p.append("join", "plan", {"offer": offer()}, T0 + 2)
         e = self.p.append("project", "plan", {"name": "mine now"}, T0 + 3)
-        self.assertIn("cannot change the project", self.p.state().ignored[e.id])
+        self.assertIn("for humans and approvers", self.p.state().ignored[e.id])
         bad = self.p.append("project", "human:ana", {"homepage": "javascript:alert(1)"}, T0 + 4)
         self.assertIn("http(s) URL", self.p.state().ignored[bad.id])
 
@@ -71,48 +70,46 @@ class JoiningTests(Base):
         super().setUp()
         a = self.p.append
         a("project", "human:ana", {"join": "open"}, T0 + 1)
-        a("join", "plan", {"role": "planner", "parent": "human:ana"}, T0 + 2)
-        a("join", "orch", {"role": "orchestrator", "parent": "plan"}, T0 + 3)
+        a("join", "plan", {"offer": offer()}, T0 + 2)
+        a("join", "orch", {"offer": offer()}, T0 + 3)
         a("project", "human:ana", {"join": "apply"}, T0 + 4)
 
     def test_apply_mode_refuses_self_join(self):
-        e = self.p.append("join", "w9", {"role": "worker", "parent": "orch"}, T0 + 10)
+        e = self.p.append("join", "w9", {"offer": offer()}, T0 + 10)
         self.assertIn("by application", self.p.state().ignored[e.id])
 
-    def test_apply_then_admit_by_the_parent_orchestrator(self):
-        self.p.append("apply", "w9", {"role": "worker", "parent": "orch", "offer": {"skills": ["python"]}}, T0 + 10)
-        dup = self.p.append("apply", "w9", {"role": "worker"}, T0 + 11)
+    def test_apply_with_a_machine_then_a_human_admits_it(self):
+        self.p.append("apply", "w9", {"offer": offer(SONNET, slots=3), "note": "gpu box"}, T0 + 10)
+        dup = self.p.append("apply", "w9", {}, T0 + 11)
         self.assertIn("already pending", self.p.state().ignored[dup.id])
-        self.p.append("admit", "orch", {"applicant": "w9"}, T0 + 12)
+        self.p.append("admit", "human:ana", {"applicant": "w9"}, T0 + 12)
         s = self.p.state()
-        self.assertEqual((s.actors["w9"].role, s.actors["w9"].parent), ("worker", "orch"))
+        self.assertEqual((s.actors["w9"].kind, s.actors["w9"].offer["slots"]), ("member", 3))
+        self.assertTrue(s.actors["w9"].present(T0 + 13))           # its offer counts from admission
         self.assertEqual([a.status for a in s.applications.values()], ["admitted"])
 
-    def test_a_member_admits_only_under_itself(self):
-        self.p.append("join", "orch2", {"role": "orchestrator", "parent": "plan"}, T0 + 5)  # refused: apply mode
-        self.p.append("apply", "orch2", {"role": "orchestrator", "parent": "plan"}, T0 + 6)
-        self.p.append("admit", "human:ana", {"applicant": "orch2"}, T0 + 7)
-        self.p.append("apply", "w9", {"role": "worker", "parent": "orch"}, T0 + 10)
-        e = self.p.append("admit", "orch2", {"applicant": "w9"}, T0 + 11)   # w9 asked for orch, not orch2
-        self.assertIn("would sit under it", self.p.state().ignored[e.id])
-        self.p.append("admit", "orch2", {"applicant": "w9", "parent": "orch2"}, T0 + 12)   # taking it in itself is fine
-        self.assertEqual(self.p.state().actors["w9"].parent, "orch2")
+    def test_members_do_not_admit_unless_they_are_approvers(self):
+        self.p.append("apply", "w9", {"offer": offer()}, T0 + 10)
+        e = self.p.append("admit", "orch", {"applicant": "w9"}, T0 + 11)
+        self.assertIn("for humans and approvers", self.p.state().ignored[e.id])
+        (self.p.home / "policy.toml").write_text(POLICY.replace('approvers = []', 'approvers = ["orch"]'), encoding="utf-8")
+        self.assertIn("w9", self.p.state().actors)   # the policy is folded over all events (a known gap: section 10)
 
     def test_decline_and_closed(self):
-        self.p.append("apply", "w9", {"role": "worker", "parent": "orch", "note": "hi"}, T0 + 10)
+        self.p.append("apply", "w9", {"offer": offer(), "note": "hi"}, T0 + 10)
         self.p.append("decline", "human:ana", {"applicant": "w9", "reason": "full"}, T0 + 11)
         s = self.p.state()
         self.assertNotIn("w9", s.actors)
         self.assertEqual(list(s.applications.values())[0].reason, "full")
         self.p.append("project", "human:ana", {"join": "closed"}, T0 + 12)
-        e = self.p.append("apply", "w8", {"role": "worker"}, T0 + 13)
+        e = self.p.append("apply", "w8", {"offer": offer()}, T0 + 13)
         self.assertIn("closed", self.p.state().ignored[e.id])
 
     def test_a_log_without_a_project_stays_open(self):
         bare = Store(self.root / "bare")
         bare.init()
         (bare.home / "policy.toml").write_text(POLICY, encoding="utf-8")
-        bare.append("join", "plan", {"role": "planner", "parent": "human:ana"}, T0)
+        bare.append("join", "plan", {"offer": offer()}, T0)
         self.assertIn("plan", bare.state().actors)
 
 
@@ -150,26 +147,20 @@ class CloneAndTrustTests(Base):
         subprocess.run(g + ["-c", "user.name=t", "-c", "user.email=t@x", "commit", "-qm", "log"], check=True)
         return "file://" + str(store.home)
 
-    def test_clone_checks_the_id_and_untrusted_runner_is_not_used(self):
-        hostile = POLICY.replace('cmd = ["claude", "-p", "--model", "{model}", "--effort", "{effort}"]',
-                                 'cmd = ["sh", "-c", "touch PWNED"]')
-        (self.p.home / "policy.toml").write_text(hostile, encoding="utf-8")
+    def test_clone_checks_the_id_and_a_project_cannot_choose_what_runs(self):
         self.p.append("project", "human:ana", {"join": "open"}, T0 + 1)
-        self.p.append("join", "plan", {"role": "planner", "parent": "human:ana"}, T0 + 2)
-        self.p.append("join", "orch", {"role": "orchestrator", "parent": "plan"}, T0 + 3)
-        self.p.append("join", "w1", {"role": "worker", "parent": "orch"}, T0 + 4)
-        self.p.append("task", "orch", {"title": "do it"}, T0 + 5)
+        self.p.append("join", "w1", {"offer": offer()}, T0 + 4)
         url = self.remote(self.p)
         m = manifest_of(self.p)
         m["log"] = {"git": url, "branch": "main"}
         ws = Workspace()
         local = ws.clone(m)
         self.assertFalse(ws.entry_for(local.home)[1]["trusted"])
-        with self.assertRaises(PermissionError):
-            runner.Run(local, "w1").command()
-        ws.set_runner([sys.executable, "-c", "print('mine')"])
-        self.assertEqual(runner.Run(local, "w1").command()[0], sys.executable)
-        self.assertEqual(runner.Run(local, "w1").go(log=lambda *_: None), "done")
+        # an old-style policy that names a command is refused outright, rather than half obeyed
+        hostile = POLICY + '\n[runner]\ncmd = ["sh", "-c", "touch PWNED"]\n'
+        (local.home / "policy.toml").write_text(hostile, encoding="utf-8")
+        with self.assertRaises(ValueError):
+            local.policy()
         self.assertFalse((Path.cwd() / "PWNED").exists())
         # a catalog that names a known id but points at another log is refused
         impostor = make_project(self.root / "impostor", name="impostor")
@@ -182,12 +173,12 @@ class CloneAndTrustTests(Base):
 class ImportTests(Base):
     def test_import_checks_the_event(self):
         other = Store(self.root / "applicant")
-        e = other.append("apply", "w9", {"role": "worker"}, T0 + 10)
+        e = other.append("apply", "w9", {"offer": offer()}, T0 + 10)
         f = other.dir / f"{e.id}.json"
         self.p.import_file(f)
         self.assertIn(e.id, self.p.read()[0])
         d = json.loads(f.read_text(encoding="utf-8"))
-        d["body"]["role"] = "planner"
+        d["body"]["offer"]["slots"] = 64
         f.write_text(json.dumps(d), encoding="utf-8")
         with self.assertRaises(ValueError):
             self.p.import_file(f)

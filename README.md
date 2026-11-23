@@ -1,78 +1,93 @@
 # baton
 
-Coordination for many AI agents working on one project, with no central server.
+A peer-to-peer network of AI agents working on one project, with no central server and no roles to pick.
 
 Point a few agents at a codebase and they work. Point hundreds at it and they write the same fix six times, collide on
 the same files, flood reviewers faster than anyone can read, and lean on one human to keep track of who does what.
 baton is the layer between the agents and the project that stops that:
 
-- **A task board.** Planners and orchestrators post tasks (and split big ones into subtasks); workers take them.
-- **Leases.** Taking a task, or claiming paths and topics directly, gives a lease that expires unless renewed.
-  Overlapping claims are refused, so two agents never work on the same files at once.
-- **Tiers.** Agents join a tree (by default planner → orchestrators → workers). Each role has its own model, effort,
-  fan-out and permissions, so strong models plan and cheap ones do the bulk work.
-- **A gate.** Anything that leaves the machine (a comment, a pull request, a message) is only *proposed*. It passes
-  duplicate detection, per-agent and total rate budgets and a lease check, then waits for a human to approve it, and
-  runs once.
-- **Peer-to-peer.** Every machine holds the whole log, a folder of content-addressed event files, and computes the
-  same state from it. Git carries the log between machines (event files never conflict). Two agents that claim the
-  same file at the same moment agree on one winner once their peers have synced.
-- **Talk in the log.** Agents ask whoever posted their task (`baton message "which file?" --wait 15m`), answer each
-  other and humans in task threads; an inbox shows what each actor still has to answer. Messages are events like any
-  other, so they reach every peer and never act on anything.
-- **A swarm that runs itself.** `baton swarm` keeps a machine's agents busy: orchestrators answer questions and
-  re-plan escalated work, workers take tasks, everything syncs in the background, and it stops after a run limit or
-  when the board is empty.
-- **Any agent.** The runner launches whatever command the policy names (Claude Code by default; Codex, Aider or a
-  script work the same), at the role's model and effort, keeps its lease alive while it works and records the outcome.
+- **Machines, not roles.** Each machine finds out what it is (CPU, memory, GPUs, disk) and which agents it can run
+  (Claude Code and its plan, Codex and its plan and models, local model servers such as Ollama, LM Studio, llama.cpp
+  and vLLM). Its owner picks which subscriptions and models may be used, at which tier, and how many work packages may
+  run at once. That is all a machine offers.
+- **The network decides who does what.** Every open work package goes to one present machine and one model, by a
+  deterministic rule every peer computes the same way: the cheapest tier good enough, the least loaded machine, a
+  model of another family for reviews. Orchestrators per level, implementers, testers, reviewers and investigators
+  are whatever the packages need, not something anyone volunteers to be.
+- **Work packages in a standard format.** Title, kind, goal, context, scope, acceptance checks, deliverables,
+  constraints, size, needs, dependencies, and a standard report at the end (changes, verification, findings, verdict).
+- **Orchestration by level.** A big package is split by an orchestrator at level 0 (a frontier model by default) into
+  children; those may be split again at level 1 (strong) and level 2 (standard), down to a maximum depth. When all
+  children end, the package comes back to be integrated.
+- **Nothing counts until it is checked.** An implemented change is tested, then reviewed (preferably by another model
+  family, on another machine); failures go back to the implementer with the findings, a few times at most, then
+  escalate.
+- **Leases.** Taking a package leases its paths; overlapping claims are refused, so two agents never edit the same
+  files at once.
+- **A gate.** Anything that leaves the machine (a comment, a pull request) is only *proposed*: duplicate detection,
+  rate budgets, a lease check, then a human approves it, and it runs once.
+- **Talk in the log.** Agents ask whoever posted their package (`baton message "…" --ask --wait 15m`) and get answers
+  in the package's thread; everything reaches every peer and humans can read it all.
+- **Peer-to-peer.** Every machine holds the whole log, a folder of content-addressed event files, and syncs it through
+  any git remote. There is no server to run or trust.
 
 ## Quick start
 
 ```sh
-export PYTHONPATH=/path/to/baton BATON_HOME=.baton      # or: pip install /path/to/baton
-python3 -m baton init                                    # then put yourself in [gate] humans in .baton/policy.toml
+export PYTHONPATH=/path/to/baton BATON_HOME=.baton          # or: pip install /path/to/baton
+python3 -m baton init                                        # then put yourself in [gate] humans in .baton/policy.toml
 
-python3 -m baton --actor plan join planner --parent human:you
-python3 -m baton --actor orch join orchestrator --parent plan
-python3 -m baton --actor w1   join worker --parent orch
-python3 -m baton --actor w2   join worker --parent orch
+python3 -m baton machine                                     # what this machine is and can run
+python3 -m baton machine allow claude:claude-haiku-5-5 claude:claude-sonnet-5-5 claude:claude-opus-5-5
+python3 -m baton machine slots 3                             # work packages at once
 
-python3 -m baton --actor orch task "fix mean() in calc/ops.py" --path calc
-python3 -m baton --actor orch task "fix slug() in text/slug.py" --path text
-python3 -m baton --actor w1 run &          # each worker takes the oldest open task its role may take
-python3 -m baton --actor w2 run &
-wait; python3 -m baton tasks --all
+python3 -m baton --actor human:you task "Import bank CSV files" --size L --path importer \
+    --goal "the importer reads the 3 bank formats" --check "unit=python3 -m unittest"
+python3 -m baton swarm --once                                # this machine joins and works until nothing is left
+python3 -m baton tasks --all
 ```
 
-That is a real run: two Claude Code workers (Haiku, low effort) fixed one bug each, in parallel, each inside its own
-lease, in under a minute.
+`baton machine` on a desktop with a Claude Pro login looks like:
 
-Or let a swarm do the scheduling: it answers the workers' questions with the orchestrator, sends escalated tasks back
-to it to re-plan, and takes tasks with the workers until nothing is left:
-
-```sh
-python3 -m baton swarm --seat orch --seat w1 --seat w2 --once          # or --spawn worker=4:orch
-python3 -m baton swarm --seat orch --spawn worker=4:orch --sync 15s     # keep going, sharing with other machines
+```
+machine m-6247340e  (Linux 7.2.11-arch1-1)
+  cpu     AMD Ryzen 5 5600G with Radeon Graphics: 6 cores / 12 threads, 7.2% busy, load 0.82 1.4 2.58
+  memory  15.5 GB, 3.5 GB available
+  gpu     NVIDIA GeForce RTX 3060 Ti: 8.0 GB (3.8 used), 49% busy
+  disk    /home/you: 31.4 GB free of 196.0 GB
+agents:
+  claude    logged in, plan pro (claude.ai), 2.1.330 (Claude Code)
+  codex     not installed
+models (allowed ones are offered; slots: 3):
+  [x] claude:claude-haiku-5-5                  fast
+  [x] claude:claude-sonnet-5-5                 standard
+  [x] claude:claude-opus-5-5                   strong
+  [ ] claude:claude-fable-5-2                  frontier
 ```
 
-Defaults are conservative on purpose: 2 task runs at once (`--parallel`), at most 20 agent runs (`--max-runs`, 0 for
-no limit), 2 attempts per task, 30 minutes per run; every run's output is kept under `<home>/runs/`.
+Every model has a tier (`fast` < `standard` < `strong` < `frontier`); change one with `baton machine tier <model>
+<tier>`. Local models get a tier from their size (≥70b strong, ≥27b standard) and run through an agent harness (Codex
+`--oss` or aider) when one is installed. `baton machine --limits` also reads the subscriptions' usage. The command run
+for each provider is this machine's own choice (`baton machine cmd claude -- claude -p --model {model} ...`); no
+project can set it.
 
-Talking:
+With several machines on one project, each runs `baton swarm --sync 15s` on its own copy of the log. `baton assign`
+shows what the network gives to whom right now, and why a package waits.
+
+Work packages can come from a file in the standard format (`baton task --file package.json`,
+[spec/schemas/package.schema.json](spec/schemas/package.schema.json)). Agents report in the standard format too:
 
 ```sh
-python3 -m baton --actor w1 message "tabs or spaces?" --wait 10m   # in BATON_TASK's thread; prints the answer
-python3 -m baton --actor orch inbox                                # what is waiting for orch's answer
-python3 -m baton --actor orch message "spaces" --reply <id prefix>
-python3 -m baton thread <task id prefix>
+baton done <id> --summary "dates parse" --change importer/dates.py --check "unit=passed:python3 -m unittest"
+baton done <id> --verdict changes_requested --finding "high:offset ignored@importer/dates.py:41"
+baton done <id> --outcome split --summary "three parts"      # an orchestrator, after posting children
 ```
 
 Outward actions:
 
 ```sh
-python3 -m baton --actor w1 check --path src/parser --repo owner/repo    # leases and open PRs on these paths
-python3 -m baton --actor w1 propose comment --target 123 --repo owner/repo --body-file review.md
-python3 -m baton status
+python3 -m baton check --path src/parser --repo owner/repo   # leases and open PRs on these paths
+python3 -m baton propose comment --target 123 --repo owner/repo --body-file review.md
 python3 -m baton --actor human:you approve <id prefix>
 python3 -m baton --actor human:you execute <id prefix> --yes
 ```
@@ -80,61 +95,54 @@ python3 -m baton --actor human:you execute <id prefix> --yes
 ## Dashboard
 
 ```sh
-python3 -m baton --actor human:you ui        # opens http://127.0.0.1:8765/#token=...
+python3 -m baton --actor human:you ui --sync 15s     # opens http://127.0.0.1:8765/#token=...
 ```
 
-The task board (each task with its message thread), the leases held now, the agent tree with each tier's model and effort, an activity feed (with what the
-gate refused and why), and the approval queue: read the exact text an agent wants to post, then approve, reject or
-execute it from the browser; agents' questions to you wait in the same queue with a reply box. It refreshes every two seconds, so it shows synced peers' work too. It listens on
-127.0.0.1 only, every write needs the session token in the printed URL, and without `--actor` (a human from the
-policy) it is read-only.
+- **This machine**: hardware meters, the agents found with their login and plan, every model with a checkbox and a
+  tier, the slots, and the exact offer projects will see.
+- **Projects**: the directory of projects from your workspace and the catalogs you follow; Help applies with this
+  machine.
+- **A project**: the package board (kind, level, tier, status, who has it with which model, the network's next pick,
+  its checks, verification and findings), the machines present with their slots in use, the work tree by level,
+  leases, applications, an activity feed, and "Waiting for you": questions, applications and proposals to approve.
 
-Sharing between machines: make `$BATON_HOME` a git repository with a common remote (any git remote, including
-another peer over SSH) and keep it synced on each machine: `baton sync --every 15s`, `baton ui --sync 15s`, or a
-`baton swarm --sync 15s`. A log you may only read still pulls; an unreachable remote is retried with back-off.
+It listens on 127.0.0.1 only, every write needs the session token in the printed URL, and without `--actor` (a human
+from the policy) it can only change this machine's settings.
 
 ## Projects, catalogs and joining
 
-baton is also a way to find projects and help them. It speaks an open protocol, [spec/PROTOCOL.md](spec/PROTOCOL.md),
-with JSON schemas in [spec/schemas](spec/schemas), so other tools can take part:
+baton speaks an open protocol, [spec/PROTOCOL.md](spec/PROTOCOL.md) (version 2), with JSON schemas in
+[spec/schemas](spec/schemas): events, work packages, reports, machine offers, manifests and catalogs.
 
 - **A project** is a log with a genesis `project` event; that event's id is the project's permanent id. Its public
-  card, the **manifest**, is computed from the log: name, summary, repo, where the log lives, what help it needs
-  (roles, skills, hardware), how it takes members (`open`, `apply`, `closed`) and typed links to other projects
-  (`depends-on`, `fork-of`, `related`, ...).
-- **A catalog** is a JSON list of manifests that anyone publishes anywhere, and can link to other catalogs, so
-  directories federate without a central server.
-- **Joining**: you `apply` as one of your agents, with what it offers; a human of the project, or the orchestrator you
-  asked to work under, `admit`s or `decline`s you.
+  card, the **manifest**, is computed from the log: name, summary, repo, where the log lives, what capacity it needs
+  (tiers, kinds of work, skills, hardware), how it takes members (`open`, `apply`, `closed`) and typed links to other
+  projects (`depends-on`, `fork-of`, `related`, ...).
+- **A catalog** is a JSON list of manifests that anyone publishes anywhere, and can link to other catalogs.
+- **Joining**: a machine `apply`s with its offer; a human admits it. There is no role in the application.
 
 ```sh
 python3 -m baton --actor human:you project create --name calc-kit --summary "Math helpers" --tag python \
-    --need "worker:python,testing*3" --log-git https://github.com/you/calc-kit-log.git
-python3 -m baton --actor human:you project link --rel depends-on --link-project <id> --link-name libfoo
-python3 -m baton project publish catalog.json            # add the manifest to a catalog file you host anywhere
+    --need "strong:python*2" --log-git https://github.com/you/calc-kit-log.git
+python3 -m baton project publish catalog.json
 
 python3 -m baton catalog add https://example.org/catalog.json
 python3 -m baton discover --tag python
-python3 -m baton --actor my-agent-1 volunteer <id prefix> --role worker --skill python --model claude-haiku-5-5
-python3 -m baton --actor human:you admit my-agent-1         # on the project's side
+python3 -m baton volunteer <id prefix> --note "evenings only"
+python3 -m baton --actor human:you admit m-6247340e          # on the project's side
 ```
-
-The dashboard's home page is this directory: search, tags, what each project needs, links between projects, a Help
-button that applies for you (fetching the project's log if needed), and catalogs to follow or drop.
-
-**Safety rule:** a project you fetched never chooses what runs on your machine. Its policy's agent command is
-ignored; set your own once with `baton workspace runner -- claude -p --model {model} --effort {effort}`.
 
 ## The policy
 
-`policy.toml` holds everything a project decides: the agent command (`[runner]`), the roles (who sits under whom,
-model, effort, fan-out, what they may do), lease lengths, the rate budget of each outward action, and who approves.
-Every peer must use the same file. See the defaults written by `baton init`.
+`policy.toml` holds what a project decides: orchestration depth, fan-out and the tier each kind of work and each level
+needs (`[network]`, `[tiers]`), the checks every change goes through (`[pipeline]`), lease lengths, the rate budget of
+each outward action, and who approves. It never holds a command. Every peer must use the same file.
 
 ## Status
 
-0.4, standard library only, Python 3.11+. `python3 -m unittest discover -s tests` runs the tests.
+0.5, standard library only, Python 3.11+. `python3 -m unittest discover -s tests` runs the tests.
 
-Not yet safe among people who don't trust each other: events are not signed (protocol version 1), so anyone who can
-write to a shared log can append events as anyone. Also not done: the policy carried in the log, verified-result events,
-sandboxing the runner, and cost accounting. [docs/design.md](docs/design.md) has the model, the threat model and the plan.
+Not yet safe among people who don't trust each other: events are not signed, so anyone who can write to a shared log
+can append events as anyone, and an offer is a claim, not a proof. Also not done: the policy carried in the log,
+sandboxing the agents, cost accounting per model. [docs/design.md](docs/design.md) has the model, the threat model and
+the plan.

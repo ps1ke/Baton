@@ -85,6 +85,33 @@ button.chip.on { border-color: var(--accent); color: var(--accent); }
 .pending, .taken, .escalated, .apply { color: var(--warn); background: var(--warn-bg); }
 .failed, .denied, .ignored, .rejected, .duplicate, .over_budget, .unleased, .unknown_action, .declined, .closed { color: var(--bad); background: var(--bad-bg); }
 .open { color: var(--accent); background: var(--accent-bg); }
+.waiting, .checking { color: var(--info); background: var(--info-bg); }
+.blocked, .stalled { color: var(--bad); background: var(--bad-bg); }
+.kind { display: inline-block; font: 600 10.5px var(--sans); text-transform: uppercase; letter-spacing: .04em; padding: 1px 6px;
+  border-radius: 4px; margin-right: 4px; background: var(--soft); color: var(--muted); }
+.kind.orchestrate { background: var(--info-bg); color: var(--info); }
+.kind.implement { background: var(--accent-bg); color: var(--accent); }
+.kind.test, .kind.review { background: var(--ok-bg); color: var(--ok); }
+.tierchip { font: 11px var(--mono); color: var(--info); }
+.meter { display: grid; grid-template-columns: 92px minmax(0, 1fr) auto; gap: 10px; align-items: center; padding: 6px 0;
+  border-bottom: 1px solid var(--line); font-size: 13px; }
+.meter .bar { height: 8px; margin: 0; border-radius: 4px; }
+.meter .bar i { border-radius: 4px; }
+.meter .v { font-variant-numeric: tabular-nums; color: var(--muted); font-size: 12px; text-align: right; }
+.meter .k { color: var(--muted); font-size: 12px; }
+@media (max-width: 640px) { .meter { grid-template-columns: 70px minmax(0, 1fr); } .meter .v { grid-column: 2; text-align: left; } }
+.agent { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; padding: 6px 0; border-bottom: 1px solid var(--line); }
+.agent b { min-width: 70px; }
+.mtable td { vertical-align: middle; }
+.mtable select { padding: 3px 6px; }
+.dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--muted); margin-right: 6px; }
+.dot.on { background: var(--ok); }
+.wt ul { list-style: none; margin: 0; padding-left: 14px; border-left: 1px solid var(--line); }
+.wt > ul { padding-left: 0; border: 0; }
+.wt li { padding: 3px 0; overflow-wrap: anywhere; }
+.wt .who { font: 11px var(--mono); color: var(--muted); margin-left: 4px; }
+.checks { display: inline-flex; gap: 4px; margin-left: 4px; }
+nav.top { display: flex; gap: 12px; }
 .proposal { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; margin-bottom: 10px; }
 .proposal .head { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
 .proposal .head .what { font-weight: 600; overflow-wrap: anywhere; }
@@ -140,8 +167,36 @@ dialog label { display: grid; gap: 4px; font-size: 12px; color: var(--muted); }
 <header>
   <h1><a href="/" id="home-link">baton</a></h1>
   <span class="crumb" id="crumb"></span>
+  <nav class="top"><button class="link" id="nav-machine">This machine</button></nav>
   <div class="stats" id="stats"></div>
 </header>
+
+<div class="wrap" id="view-machine" hidden>
+  <main>
+    <div class="stack">
+      <section><h2>What this machine offers</h2>
+        <div class="note">Choose the subscriptions and models baton may use here, at which tier, and how many work packages
+          may run at once. The project's network decides what this machine does with them (orchestrating at some level,
+          implementing, testing, reviewing); you never pick a role.</div>
+        <div class="form" style="grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr))">
+          <label>Machine name (shown to projects)<input id="m-name" autocomplete="off"></label>
+          <label>Packages at once (slots)<input id="m-slots" type="number" min="0" max="64"></label>
+          <label style="display:flex; gap:6px; align-items:center"><input type="checkbox" id="m-share"> share hardware details</label>
+        </div>
+        <table class="mtable" style="margin-top:12px"><thead><tr><th>use</th><th>model</th><th>tier</th><th>plan</th></tr></thead>
+          <tbody id="m-models"></tbody></table>
+        <div class="btns" style="margin-top:12px"><button class="primary" id="m-save">Save</button>
+          <button id="m-probe">Detect again</button><button id="m-limits">Read usage limits</button></div>
+        <div id="m-msg"></div>
+      </section>
+      <section><h2>The offer projects see</h2><pre class="mono" id="m-offer" style="white-space:pre-wrap; margin:0"></pre></section>
+    </div>
+    <div class="stack">
+      <section><h2>Hardware</h2><div id="m-hw"></div></section>
+      <section><h2>Agents found</h2><div id="m-agents"></div></section>
+    </div>
+  </main>
+</div>
 
 <div class="wrap" id="view-home" hidden>
   <div id="home-banner"></div>
@@ -185,7 +240,8 @@ dialog label { display: grid; gap: 4px; font-size: 12px; color: var(--muted); }
     </div>
     <div class="stack">
       <section><h2>Leases held now <span class="n" id="n-leases">0</span></h2><div id="leases"></div></section>
-      <section><h2>Agents <span class="n" id="n-actors">0</span></h2><div class="tree" id="tree"></div></section>
+      <section><h2>Machines <span class="n" id="n-actors">0</span></h2><div id="tree"></div></section>
+      <section><h2>Work tree</h2><div class="note" id="net-rules"></div><div class="wt" id="worktree"></div></section>
       <section><h2>Applications <span class="n" id="n-apps">0</span></h2><div id="apps"></div></section>
       <section><h2>Activity</h2><div class="feed" id="feed"></div></section>
     </div>
@@ -196,16 +252,13 @@ dialog label { display: grid; gap: 4px; font-size: 12px; color: var(--muted); }
   <h3 id="help-title">Help this project</h3>
   <div class="note" id="help-sub"></div>
   <div class="fields">
-    <label>Your agent's name<input id="h-actor" autocomplete="off"></label>
-    <label>Role<select id="h-role"></select></label>
-    <label>Work under (optional: the orchestrator or planner you want)<input id="h-parent" autocomplete="off"></label>
-    <label>Skills (comma separated)<input id="h-skills"></label>
-    <label>Models you run (comma separated)<input id="h-models" placeholder="claude-haiku-5-5"></label>
-    <label>Hardware (comma separated)<input id="h-hardware" placeholder="gpu:vulkan, 32GB"></label>
+    <label>Machine name<input id="h-actor" autocomplete="off"></label>
+    <div><div class="label">This machine offers</div><div id="h-offer" class="note"></div></div>
     <label>Note to the project<textarea id="h-note" rows="3" maxlength="2000"></textarea></label>
   </div>
-  <div class="note">This adds an application to the project's log; if you don't have the log yet, it is fetched first.
-    Nothing runs: your agents only start when you run them, with your own agent command.</div>
+  <div class="note">This adds an application to the project's log with this machine's offer; if you don't have the log
+    yet, it is fetched first. You don't choose a role: once admitted, the project's network gives the machine work that
+    fits what it offers. Nothing runs until you start <span class="mono">baton swarm</span>, with this machine's own agent commands.</div>
   <div id="h-msg"></div>
   <div class="btns" style="margin-top:12px; justify-content:flex-end">
     <button id="h-cancel">Close</button><button class="primary" id="h-send">Apply</button>
@@ -245,6 +298,7 @@ function el(tag, attrs, ...kids) {
 const $ = (id) => document.getElementById(id);
 const pill = (s, text) => el("span", {class: "pill " + s}, text || s.replace("_", " "));
 const short = (id) => id ? id.slice(0, 12) : "";
+const FINAL = ["done", "failed", "escalated"];
 function ago(ts, now) {
   const d = Math.max(0, Math.round(now - ts));
   return d < 60 ? d + "s" : d < 3600 ? Math.round(d / 60) + "m" : d < 86400 ? Math.round(d / 3600) + "h" : Math.round(d / 86400) + "d";
@@ -264,7 +318,7 @@ async function post(path, body) {
 }
 function needChips(m) {
   return (m.needs || []).map(n => el("span", {class: "chip need", title: n.note || ""},
-    (n.count ? n.count + "× " : "") + n.role + ((n.skills || []).length ? ": " + n.skills.join(", ") : "") +
+    (n.count ? n.count + "× " : "") + (n.tier || n.kind || "any") + ((n.skills || []).length ? ": " + n.skills.join(", ") : "") +
     ((n.hardware || []).length ? " @ " + n.hardware.join(", ") : "")));
 }
 function joinPill(mode) {
@@ -275,19 +329,89 @@ const meText = (me) => me ? "acting as " + me : "read-only";
 
 // ---- routing ------------------------------------------------------------------------------------------------------
 const current = () => new URLSearchParams(location.search).get("p");
+const onMachine = () => new URLSearchParams(location.search).has("machine");
 function go(key) {
   history.pushState(null, "", (key ? "/?p=" + encodeURIComponent(key) : "/") + location.hash);
   lastState = ""; state = null; route();
 }
+function goMachine() { history.pushState(null, "", "/?machine=1" + location.hash); route(); }
+$("nav-machine").addEventListener("click", goMachine);
 window.addEventListener("popstate", () => { lastState = ""; route(); });
 $("home-link").addEventListener("click", (ev) => { ev.preventDefault(); go(null); });
 function route() {
-  const key = current();
-  $("view-home").hidden = !!key; $("view-project").hidden = !key;
+  const key = current(), mach = onMachine();
+  $("view-home").hidden = !!key || mach; $("view-project").hidden = !key; $("view-machine").hidden = !mach;
   clearInterval(timer);
-  if (key) { refreshProject(); timer = setInterval(refreshProject, 2000); }
+  if (mach) { loadMachine(); }
+  else if (key) { refreshProject(); timer = setInterval(refreshProject, 2000); }
   else { refreshDir(); timer = setInterval(refreshDir, 5000); }
 }
+
+// ---- this machine ---------------------------------------------------------------------------------------------------
+let machine = null;
+async function loadMachine(q) {
+  $("crumb").replaceChildren(el("b", {}, "This machine"));
+  $("stats").replaceChildren(el("span", {}, q === "limits" ? "reading usage limits…" : "detecting…"));
+  try {
+    const r = await fetch("/api/machine" + (q ? "?" + q + "=1" : ""), {cache: "no-store"});
+    machine = await r.json(); renderMachine();
+  } catch (e) { $("stats").replaceChildren(setLive(false)); }
+}
+function meter(label, used, total, unit, extra) {
+  const pct = total ? Math.max(0, Math.min(100, 100 * used / total)) : 0;
+  return el("div", {class: "meter"}, el("span", {class: "k"}, label),
+    el("div", {class: "bar", role: "img", "aria-label": label + " " + Math.round(pct) + "%"}, el("i", {style: "width:" + pct + "%"})),
+    el("span", {class: "v"}, extra || (used == null ? "?" : (+used).toFixed(1) + " / " + total + " " + unit)));
+}
+function renderMachine() {
+  $("crumb").replaceChildren(el("button", {class: "link", onclick: () => go(null)}, "Projects"), " / ", el("b", {}, "This machine"));
+  const m = machine, p = m.probe, cfg = m.config, c = p.cpu, mem = p.memory;
+  $("stats").replaceChildren(el("span", {}, p.os), el("span", {}, el("b", {}, m.offer.models.length), " models offered"),
+    el("span", {}, el("b", {}, m.offer.slots), " slots"), setLive(true));
+  const hw = [el("div", {class: "note", style: "margin-bottom:6px"}, (c.model || c.arch) + " · " + (c.physical_cores || "?") + " cores / " + c.logical_cores + " threads")];
+  hw.push(meter("CPU", c.utilization_percent, 100, "%", c.utilization_percent == null ? "?" : c.utilization_percent + "% busy" + (c.load ? " · load " + c.load[0] : "")));
+  if (mem.total_gb) hw.push(meter("Memory", mem.total_gb - (mem.available_gb ?? mem.total_gb), mem.total_gb, "GB used"));
+  for (const g of p.gpus) hw.push(g.vram_gb ? meter("GPU", g.vram_used_gb, g.vram_gb, "GB VRAM", null) : meter("GPU", 0, 0, ""),
+    el("div", {class: "note", style: "margin:-2px 0 4px 102px"}, g.name + (g.utilization_percent != null ? " · " + g.utilization_percent + "% busy" : "")));
+  if (!p.gpus.length) hw.push(el("div", {class: "meter"}, el("span", {class: "k"}, "GPU"), el("span", {class: "note"}, "none found")));
+  for (const d of p.disk) hw.push(meter("Disk", d.total_gb - d.free_gb, d.total_gb, "GB used", d.free_gb + " GB free of " + d.total_gb),
+    el("div", {class: "note mono", style: "margin:-2px 0 4px 102px"}, d.path));
+  $("m-hw").replaceChildren(...hw);
+  $("m-agents").replaceChildren(...p.agents.map(a => {
+    const st = a.kind === "local" ? pill("ok", "server at " + a.url) : !a.installed ? pill("closed", "not installed")
+      : a.logged_in ? pill("ok", "logged in") : a.logged_in === false ? pill("failed", "not logged in") : pill("pending", "login unknown");
+    const lim = a.limits ? Object.entries(a.limits).filter(([k, v]) => k.endsWith("_percent") && v != null).map(([k, v]) => k.replace("_percent", "") + " " + v + "%").join(" · ") : "";
+    return el("div", {class: "agent"}, el("b", {}, a.id), st, a.plan ? el("span", {class: "chip"}, "plan " + a.plan) : null,
+      a.version ? el("span", {class: "note"}, a.version) : null, el("span", {class: "note"}, (a.models || []).length + " models"),
+      lim ? el("span", {class: "note"}, "usage: " + lim) : (a.limits && a.limits.error ? el("span", {class: "note"}, a.limits.error) : null));
+  }));
+  $("m-name").value = cfg.name || "";
+  $("m-slots").value = cfg.slots ?? ""; $("m-slots").placeholder = m.suggested_slots + " suggested";
+  $("m-share").checked = cfg.share_hardware !== false;
+  $("m-models").replaceChildren(...m.models.map(x => el("tr", {},
+    el("td", {}, el("input", {type: "checkbox", "data-ref": x.ref, checked: x.allowed, disabled: !x.usable && !x.allowed,
+      "aria-label": "use " + x.ref})),
+    el("td", {}, el("div", {class: "mono"}, x.ref), !x.usable ? el("div", {class: "note"}, x.why) : x.unverified ? el("div", {class: "note"}, "from baton's catalog: not confirmed by " + x.provider) : null),
+    el("td", {}, el("select", {"data-tier": x.ref, "aria-label": "tier of " + x.ref}, m.tiers.map(tr => el("option", {value: tr, selected: tr === x.tier}, tr)))),
+    el("td", {class: "note"}, x.plan || ""))));
+  $("m-offer").textContent = JSON.stringify(m.offer, null, 1);
+}
+$("m-save").addEventListener("click", async () => {
+  const msg = $("m-msg"); msg.replaceChildren();
+  const allowed = [...document.querySelectorAll("#m-models input[data-ref]")].filter(i => i.checked).map(i => i.getAttribute("data-ref"));
+  const tiers = {};
+  for (const s of document.querySelectorAll("#m-models select[data-tier]")) {
+    const ref = s.getAttribute("data-tier"), was = machine.models.find(x => x.ref === ref);
+    if (was && s.value !== was.tier) tiers[ref] = s.value; else if (machine.config.tiers[ref]) tiers[ref] = s.value;
+  }
+  try {
+    machine = await post("/api/machine", {allowed, tiers, slots: $("m-slots").value === "" ? null : +$("m-slots").value,
+      name: $("m-name").value.trim(), share_hardware: $("m-share").checked});
+    renderMachine(); msg.replaceChildren(el("div", {class: "okmsg"}, "Saved. A running swarm announces the new offer on its next pass."));
+  } catch (e) { msg.replaceChildren(el("div", {class: "err"}, e.message)); }
+});
+$("m-probe").addEventListener("click", () => loadMachine("fresh"));
+$("m-limits").addEventListener("click", () => loadMachine("limits"));
 
 // ---- directory ----------------------------------------------------------------------------------------------------
 async function refreshDir(fresh) {
@@ -328,7 +452,7 @@ function projectCard(e) {
 function matches(e, q) {
   const m = e.manifest;
   const hay = [m.id, m.name, m.summary, m.description, ...(m.tags || []),
-    ...(m.needs || []).flatMap(n => [n.role, ...(n.skills || []), ...(n.hardware || [])])].filter(Boolean).join(" ").toLowerCase();
+    ...(m.needs || []).flatMap(n => [n.tier, n.kind, ...(n.skills || []), ...(n.hardware || [])])].filter(Boolean).join(" ").toLowerCase();
   return q.split(/\s+/).every(w => hay.includes(w));
 }
 function renderDir() {
@@ -361,18 +485,23 @@ $("cat-add").addEventListener("click", () => catalog("add", $("cat-src").value.t
 for (const id of ["q", "f-join", "f-mine"]) $(id).addEventListener("input", () => renderDir());
 
 // ---- help (apply) -------------------------------------------------------------------------------------------------
-function openHelp(e) {
+async function openHelp(e) {
   helpFor = e; const m = e.manifest;
   $("help-title").textContent = "Help " + m.name;
-  $("help-sub").textContent = (m.summary ? m.summary + " " : "") +
-    (m.join === "open" ? "This project is open: you could also join directly." : "A human or orchestrator of the project admits you.");
-  const roles = [...new Set([...(m.needs || []).map(n => n.role), "worker", "orchestrator"])];
-  $("h-role").replaceChildren(...roles.map(r => el("option", {value: r}, r)));
-  const need = (m.needs || [])[0];
-  $("h-skills").value = need && need.skills ? need.skills.join(", ") : "";
-  if (!$("h-actor").value) $("h-actor").value = "helper-" + Math.random().toString(36).slice(2, 6);
+  $("help-sub").textContent = (m.summary ? m.summary + " " : "") + (m.join === "open" ? "This project is open." : "A human of the project admits you.");
   $("h-msg").replaceChildren(); $("h-send").disabled = false;
+  $("h-offer").textContent = "reading this machine…";
   $("help-dlg").showModal();
+  try {
+    const mm = await (await fetch("/api/machine", {cache: "no-store"})).json();
+    if (!$("h-actor").value) $("h-actor").value = mm.config.name;
+    const o = mm.offer;
+    $("h-offer").replaceChildren(...(o.models.length ? [
+      el("div", {}, o.models.map(x => el("span", {class: "chip"}, x.id + " · " + x.tier))),
+      el("div", {}, o.slots + " package(s) at once" + (o.hardware ? " · " + o.hardware.tags.join(", ") : ""))]
+      : [el("span", {class: "err"}, "No model is allowed yet. "), el("button", {class: "link", onclick: () => { $("help-dlg").close(); goMachine(); }}, "Choose them under This machine")]));
+    $("h-send").disabled = !o.models.length;
+  } catch (err) { $("h-offer").textContent = "could not read this machine"; }
 }
 $("h-cancel").addEventListener("click", () => $("help-dlg").close());
 $("h-send").addEventListener("click", async () => {
@@ -380,9 +509,7 @@ $("h-send").addEventListener("click", async () => {
   msg.replaceChildren(el("div", {class: "note"}, helpFor.local ? "Applying…" : "Fetching the project's log, then applying…"));
   $("h-send").disabled = true;
   try {
-    const out = await post("/api/volunteer", {project: helpFor.manifest.id, actor: $("h-actor").value.trim(), role: $("h-role").value,
-      parent: $("h-parent").value.trim(), skills: $("h-skills").value, models: $("h-models").value,
-      hardware: $("h-hardware").value, note: $("h-note").value});
+    const out = await post("/api/volunteer", {project: helpFor.manifest.id, actor: $("h-actor").value.trim(), note: $("h-note").value});
     msg.replaceChildren(el("div", {class: "okmsg"}, "Applied as " + $("h-actor").value.trim() + "."),
       el("div", {class: "note"}, out.deliver), el("div", {class: "mono note"}, out.file));
     lastState = ""; await refreshDir(true); if (current()) refreshProject();
@@ -432,10 +559,13 @@ function proposalCard(p, actions) {
 }
 function appCard(a) {
   const s = state, err = el("div", {class: "err"});
-  const offer = Object.entries(a.offer || {}).map(([k, v]) => el("span", {class: "chip"}, k + ": " + (Array.isArray(v) ? v.join(", ") : JSON.stringify(v))));
+  const o = a.offer || {};
+  const offer = [...(o.models || []).map(x => el("span", {class: "chip"}, x.id + " · " + x.tier)),
+    o.slots != null ? el("span", {class: "chip"}, o.slots + " slots") : null,
+    ...((o.hardware || {}).tags || []).map(x => el("span", {class: "chip"}, x))].filter(Boolean);
   return el("div", {class: "proposal"},
     el("div", {class: "head"}, pill(a.status), el("span", {class: "what"}, a.actor + " wants to help"), el("span", {class: "note"},
-      "as " + a.role + (a.parent ? " under " + a.parent : "") + " · " + ago(a.ts, s.now) + " ago" + (a.decided_by ? " · by " + a.decided_by : ""))),
+      ago(a.ts, s.now) + " ago" + (a.decided_by ? " · by " + a.decided_by : ""))),
     offer.length ? el("div", {}, offer) : null,
     a.note ? el("pre", {}, a.note) : null,
     a.reason ? el("div", {class: "note"}, a.reason) : null,
@@ -474,11 +604,19 @@ function taskCard(t, byId) {
   return el("div", {class: "card" + (t.parent ? " sub" : "")},
     el("div", {class: "t"}, t.title),
     t.detail ? el("div", {class: "m clamp", title: t.detail}, t.detail) : null,
-    el("div", {}, pill(t.status), t.role ? el("span", {class: "chip"}, "for " + t.role) : null,
-      t.scope.filter(x => !x.startsWith("task:")).map(x => el("span", {class: "chip"}, x || "(whole repo)"))),
+    el("div", {}, el("span", {class: "kind " + t.kind}, t.kind), el("span", {class: "tierchip"}, "L" + t.level + " · " + t.tier + " "),
+      pill(t.status), t.size ? el("span", {class: "chip"}, t.size) : null, t.rework ? el("span", {class: "chip"}, "rework " + t.rework) : null,
+      t.scope.filter(x => !x.startsWith("task:") && !x.startsWith("check:")).map(x => el("span", {class: "chip"}, x || "(whole repo)"))),
+    t.goal ? el("div", {class: "m clamp", title: t.goal}, "goal: " + t.goal) : null,
+    t.status === "open" && s.assignment[t.id] ? el("div", {class: "m"}, "network: " + s.assignment[t.id].member + " with " + s.assignment[t.id].model) : null,
+    t.status === "open" && !s.assignment[t.id] ? el("div", {class: "m"}, "network: no present machine fits yet (" + t.tier + ")") : null,
+    t.checks.length ? el("div", {class: "m"}, "checks ", t.checks.map(c => byId[c] ? pill(byId[c].status, byId[c].kind + " " + byId[c].status) : null)) : null,
+    t.report && t.report.verification ? el("div", {class: "m"}, "verification ", pill(t.report.verification.status === "passed" ? "done" : t.report.verification.status === "failed" ? "failed" : "pending", t.report.verification.status)) : null,
+    t.report && t.report.verdict ? el("div", {class: "m"}, "verdict ", pill(t.report.verdict === "passed" ? "done" : "failed", t.report.verdict.replace("_", " "))) : null,
+    (t.report && t.report.findings || []).slice(0, 3).map(f => el("div", {class: "m"}, f.severity + ": " + f.text + (f.path ? " (" + f.path + (f.line ? ":" + f.line : "") + ")" : ""))),
     parent ? el("div", {class: "m"}, "part of “" + parent.title + "”") : null,
     t.subtasks.length ? el("div", {class: "m"}, t.subtasks.length + " subtask(s)") : null,
-    t.left != null ? el("div", {class: "m"}, "held by " + t.holder + " · " + left(t.left) + " left") : null,
+    t.left != null ? el("div", {class: "m"}, "held by " + t.holder + (t.model ? " · " + t.model : "") + " · " + left(t.left) + " left") : null,
     t.summary ? el("div", {class: "m clamp", title: t.summary}, t.summary) : null,
     el("div", {class: "m"}, short(t.id) + " · posted by " + t.by + " · " + ago(t.created, s.now) + " ago"),
     (thread.length || s.me_here) ? el("button", {class: "talk", "aria-expanded": open ? "true" : "false",
@@ -521,11 +659,11 @@ function renderProject() {
   const s = state, m = s.manifest;
   $("crumb").replaceChildren(el("button", {class: "link", onclick: () => go(null)}, "Projects"), " / ", el("b", {}, m ? m.name : "private log"));
   const by = (st) => s.tasks.filter(t => t.status === st).length;
-  $("stats").replaceChildren(el("span", {}, el("b", {}, s.events), " events"), el("span", {}, el("b", {}, by("open")), " open"),
+  $("stats").replaceChildren(...[el("span", {}, el("b", {}, s.events), " events"), el("span", {}, el("b", {}, by("open")), " open"),
     el("span", {}, el("b", {}, by("taken")), " running"), el("span", {}, el("b", {}, s.leases.length), " leases"),
     el("span", {}, el("b", {}, s.counts.refused + s.counts.denied), " refused at the gate"),
     s.sync ? el("span", {title: s.sync.error || "", class: s.sync.pulled ? "" : "err"}, s.sync.pulled ? "synced " + ago(s.sync.at, s.now) + " ago" + (s.sync.ok ? "" : " (pull only)") : "sync failing") : null,
-    el("span", {}, meText(s.me)), setLive(true));
+    el("span", {}, meText(s.me)), setLive(true)].filter(Boolean));
   const banners = [];
   if (s.me && !s.me_here) banners.push(el("div", {class: "banner"}, s.me + " is not a human of this project (" + (s.humans.join(", ") || "none") + "): you can watch and apply here, not decide."));
   if (!s.me) banners.push(el("div", {class: "banner"}, "Read-only. Start it with `baton ui --actor human:<you>` to decide."));
@@ -540,9 +678,9 @@ function renderProject() {
     ...pending.map(p => proposalCard(p, [["Approve", "approve", "primary"], ["Reject", "reject", "danger"]]))],
     "Nothing waiting. Agents' questions, applications and proposals land here before anything happens.");
   $("n-tasks").textContent = s.tasks.length;
-  fill("c-open", s.tasks.filter(t => t.status === "open").map(t => taskCard(t, byId)), "No open tasks.");
-  fill("c-taken", s.tasks.filter(t => t.status === "taken").map(t => taskCard(t, byId)), "Nobody is working.");
-  fill("c-ended", s.tasks.filter(t => !["open", "taken"].includes(t.status)).reverse().slice(0, 30).map(t => taskCard(t, byId)), "Nothing finished yet.");
+  fill("c-open", s.tasks.filter(t => ["open", "blocked", "stalled"].includes(t.status)).map(t => taskCard(t, byId)), "No open packages.");
+  fill("c-taken", s.tasks.filter(t => ["taken", "checking", "waiting"].includes(t.status)).map(t => taskCard(t, byId)), "Nobody is working.");
+  fill("c-ended", s.tasks.filter(t => FINAL.includes(t.status)).reverse().slice(0, 30).map(t => taskCard(t, byId)), "Nothing finished yet.");
   const others = s.proposals.filter(p => p.status !== "pending");
   $("n-proposals").textContent = others.length;
   fill("proposals", others.slice(0, 25).map(p => proposalCard(p, p.status === "approved" ? [["Execute", "execute", "primary"], ["Reject", "reject", "danger"]] : [])),
@@ -553,12 +691,25 @@ function renderProject() {
       el("td", {}, [...l.scope.map(x => x || "(whole repo)"), ...l.topics.filter(x => !x.startsWith("task:"))].map(x => el("span", {class: "chip"}, x))),
       el("td", {class: "num"}, left(l.left), el("div", {class: "bar"}, el("i", {style: "width:" + Math.max(2, Math.min(100, 100 * l.left / l.ttl)) + "%"}))))))] : [],
     "No leases held.");
-  const actors = Object.fromEntries(s.actors.map(a => [a.name, a]));
-  const node = (a) => el("li", {}, el("b", {}, a.name), el("span", {class: "role"}, a.role),
-    a.model ? el("span", {class: "tier"}, a.model + " · " + a.effort) : null,
-    a.children.length ? el("ul", {}, a.children.map(c => node(actors[c]))) : null);
-  $("n-actors").textContent = s.actors.filter(a => a.role !== "human").length;
-  fill("tree", s.actors.length ? [el("ul", {}, s.actors.filter(a => !a.parent).map(node))] : [], "No agents have joined.");
+  $("n-actors").textContent = s.members.filter(m => m.present).length + " / " + s.members.length;
+  fill("tree", s.members.map(m => {
+    const o = m.offer || {}, slots = o.slots || 0;
+    return el("div", {class: "agent", style: "display:block"},
+      el("div", {}, el("span", {class: "dot" + (m.present ? " on" : "")}), el("b", {}, m.name), " ",
+        el("span", {class: "note"}, m.present ? m.busy + " / " + slots + " slots busy" : m.last_seen ? "last seen " + ago(m.last_seen, s.now) + " ago" : "never offered")),
+      slots ? el("div", {class: "bar"}, el("i", {style: "width:" + Math.min(100, 100 * m.busy / slots) + "%"})) : null,
+      el("div", {}, (o.models || []).map(x => el("span", {class: "chip"}, x.id + " · " + x.tier)), ((o.hardware || {}).tags || []).map(x => el("span", {class: "chip"}, x))));
+  }), "No machine has joined.");
+  const n = s.network;
+  $("net-rules").textContent = "orchestration levels 0–" + (n.max_depth - 1) + " at " + n.orchestrate.join(" → ") + "; implement " + n.tiers.implement +
+    ", test " + n.tiers.test + ", review " + n.tiers.review + "; every change goes through " + (n.pipeline.join(" then ") || "nothing") + ".";
+  const wtNode = (t) => el("li", {}, el("span", {class: "kind " + t.kind}, t.kind), el("span", {class: "tierchip"}, "L" + t.level + " "),
+    pill(t.status), " ", t.title, t.holder ? el("span", {class: "who"}, t.holder + " · " + (t.model || "")) : null,
+    t.status === "open" && s.assignment[t.id] ? el("span", {class: "who"}, "→ " + s.assignment[t.id].member) : null,
+    t.checks.length ? el("span", {class: "checks"}, t.checks.map(c => byId[c] ? pill(byId[c].status, byId[c].kind) : null)) : null,
+    t.subtasks.length ? el("ul", {}, t.subtasks.map(c => byId[c]).filter(Boolean).map(wtNode)) : null);
+  const roots = s.tasks.filter(t => !t.parent && !t.of);
+  fill("worktree", roots.length ? [el("ul", {}, roots.map(wtNode))] : [], "No packages yet.");
   const decided = s.applications.filter(a => a.status !== "pending");
   $("n-apps").textContent = s.applications.length;
   fill("apps", decided.slice(0, 20).map(appCard), pendingApps.length ? "Pending applications are under “Waiting for you”." : "No applications yet.");

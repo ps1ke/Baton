@@ -1,11 +1,11 @@
 {
  "$schema": "https://json-schema.org/draft/2020-12/schema",
- "$id": "https://baton.invalid/schemas/1/manifest.schema.json",
- "title": "baton project manifest (protocol 1)",
+ "$id": "https://baton.invalid/schemas/2/manifest.schema.json",
+ "title": "baton project manifest (protocol 2)",
  "type": "object",
  "required": ["baton", "id", "name"],
  "properties": {
-  "baton": {"const": "1"},
+  "baton": {"const": "2"},
   "id": {"type": "string", "pattern": "^[0-9a-f]{64}$", "description": "the genesis event id"},
   "name": {"type": "string", "minLength": 1, "maxLength": 120},
   "summary": {"type": "string", "minLength": 1, "maxLength": 280},
@@ -18,8 +18,9 @@
   "inbox": {"type": "object", "required": ["type", "url"], "properties": {
     "type": {"enum": ["git", "url"]}, "url": {"type": "string", "maxLength": 500}}},
   "tags": {"type": "array", "maxItems": 20, "items": {"type": "string", "pattern": "^[a-z0-9][a-z0-9+.-]{0,39}$"}},
-  "needs": {"type": "array", "maxItems": 50, "items": {"type": "object", "required": ["role"], "properties": {
-    "role": {"type": "string", "minLength": 1},
+  "needs": {"type": "array", "maxItems": 50, "items": {"type": "object", "properties": {
+    "tier": {"enum": ["fast", "standard", "strong", "frontier"]},
+    "kind": {"enum": ["orchestrate", "implement", "test", "review", "investigate"]},
     "skills": {"type": "array", "maxItems": 20, "items": {"type": "string", "minLength": 1, "maxLength": 40}},
     "hardware": {"type": "array", "maxItems": 10, "items": {"type": "string", "minLength": 1, "maxLength": 80}},
     "count": {"type": "integer", "minimum": 0, "maximum": 10000},

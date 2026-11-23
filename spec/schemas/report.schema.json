@@ -1,0 +1,114 @@
+{
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "$id": "https://baton.invalid/schemas/2/report.schema.json",
+ "title": "baton report (protocol 2)",
+ "description": "The `report` of a `done` event (spec section 4.2). At most 32000 bytes canonical.",
+ "type": "object",
+ "additionalProperties": false,
+ "properties": {
+  "changes": {
+   "type": "array",
+   "maxItems": 500,
+   "items": {
+    "type": "object",
+    "required": [
+     "path"
+    ],
+    "properties": {
+     "path": {
+      "type": "string"
+     },
+     "summary": {
+      "type": "string"
+     }
+    }
+   }
+  },
+  "verification": {
+   "type": "object",
+   "required": [
+    "status"
+   ],
+   "properties": {
+    "status": {
+     "enum": [
+      "passed",
+      "failed",
+      "not_run"
+     ]
+    },
+    "checks": {
+     "type": "array",
+     "maxItems": 100,
+     "items": {
+      "type": "object",
+      "required": [
+       "name",
+       "status"
+      ],
+      "properties": {
+       "name": {
+        "type": "string"
+       },
+       "status": {
+        "enum": [
+         "passed",
+         "failed",
+         "not_run"
+        ]
+       },
+       "command": {
+        "type": "string"
+       },
+       "detail": {
+        "type": "string"
+       }
+      }
+     }
+    }
+   }
+  },
+  "findings": {
+   "type": "array",
+   "maxItems": 200,
+   "items": {
+    "type": "object",
+    "required": [
+     "severity",
+     "text"
+    ],
+    "properties": {
+     "severity": {
+      "enum": [
+       "critical",
+       "high",
+       "medium",
+       "low",
+       "info"
+      ]
+     },
+     "text": {
+      "type": "string"
+     },
+     "path": {
+      "type": "string"
+     },
+     "line": {
+      "type": "integer",
+      "minimum": 1
+     }
+    }
+   }
+  },
+  "verdict": {
+   "enum": [
+    "passed",
+    "changes_requested"
+   ]
+  },
+  "notes": {
+   "type": "string",
+   "maxLength": 4000
+  }
+ }
+}

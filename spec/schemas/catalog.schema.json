@@ -1,7 +1,7 @@
 {
  "$schema": "https://json-schema.org/draft/2020-12/schema",
- "$id": "https://baton.invalid/schemas/1/catalog.schema.json",
- "title": "baton catalog (protocol 1)",
+ "$id": "https://baton.invalid/schemas/2/catalog.schema.json",
+ "title": "baton catalog (protocol 2)",
  "type": "object",
  "required": ["baton_catalog", "name"],
  "properties": {

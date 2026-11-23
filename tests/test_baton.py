@@ -8,23 +8,12 @@ from baton import forge, paths
 from baton import policy as pol
 from baton.store import Store
 
-POLICY = pol.DEFAULT.replace('humans = []', 'humans = ["human:ana"]')
-T0 = 1_000_000.0
-
-
-def peer(root: Path, name: str) -> Store:
-    s = Store(root / name)
-    s.init()
-    (s.home / "policy.toml").write_text(POLICY, encoding="utf-8")
-    return s
+from helpers import T0, offer, peer, machines
 
 
 def tree(s: Store, t=T0):
-    """human:ana -> planner p -> orchestrator o -> workers w1, w2"""
-    s.append("join", "p", {"role": "planner", "parent": "human:ana"}, t)
-    s.append("join", "o", {"role": "orchestrator", "parent": "p"}, t + 1)
-    s.append("join", "w1", {"role": "worker", "parent": "o"}, t + 2)
-    s.append("join", "w2", {"role": "worker", "parent": "o"}, t + 3)
+    """Four machines: no roles, the network decides what each does."""
+    machines(s, t, p=offer(), o=offer(), w1=offer(), w2=offer())
 
 
 class Base(unittest.TestCase):
@@ -50,9 +39,9 @@ class PathTests(unittest.TestCase):
 
 class EventTests(unittest.TestCase):
     def test_edited_event_is_refused(self):
-        e = ev.make("join", "x", {"role": "worker"}, [], 1, T0)
+        e = ev.make("join", "x", {"offer": {"slots": 1}}, [], 1, T0)
         d = e.to_dict()
-        d["body"]["role"] = "planner"
+        d["body"]["offer"]["slots"] = 9
         with self.assertRaises(ev.BadEvent):
             ev.from_dict(d)
 
@@ -62,21 +51,30 @@ class EventTests(unittest.TestCase):
         self.assertEqual(a.id, b.id)
 
 
-class TreeTests(Base):
-    def test_tiers_carry_model_and_effort(self):
+class MemberTests(Base):
+    def test_a_member_is_a_machine_with_an_offer(self):
         s = self.a.state()
-        self.assertEqual((s.actors["w1"].role, s.actors["w1"].model, s.actors["w1"].effort),
-                         ("worker", "claude-haiku-5-5", "low"))
-        self.assertEqual(s.actors["o"].children, ["w1", "w2"])
+        self.assertEqual((s.actors["w1"].kind, s.actors["w1"].offer["models"][0]["id"]),
+                         ("member", "claude:claude-sonnet-5-5"))
+        self.assertTrue(s.actors["w1"].present(T0 + 100))
 
-    def test_wrong_parent_and_fan_out_are_refused(self):
-        bad = self.a.append("join", "w3", {"role": "worker", "parent": "p"}, T0 + 10)
-        self.assertIn("must join under a orchestrator", self.a.state().ignored[bad.id])
-        for i in range(5):   # the planner has room for 4 orchestrators and already has 1
-            self.a.append("join", f"o{i}", {"role": "orchestrator", "parent": "p"}, T0 + 20 + i)
-        s = self.a.state()
-        self.assertEqual(len(s.actors["p"].children), 4)
-        self.assertNotIn("o4", s.actors)
+    def test_bad_offers_and_human_names_are_refused(self):
+        bad = self.a.append("join", "x", {"offer": {"models": [{"id": "nocolon", "tier": "fast"}], "slots": 1}}, T0 + 10)
+        self.assertIn("provider:model", self.a.state().ignored[bad.id])
+        fake = self.a.append("join", "human:eve", {}, T0 + 11)
+        self.assertIn("human:", self.a.state().ignored[fake.id])
+        many = self.a.append("offer", "w1", {"models": [], "slots": 65}, T0 + 12)
+        self.assertIn("slots", self.a.state().ignored[many.id])
+
+    def test_an_offer_lapses_without_renewal(self):
+        short = pol.DEFAULT.replace('humans = []', 'humans = ["human:ana"]')
+        s = peer(self.root, "short", short)
+        machines(s, T0, m=offer(ttl=60))
+        st = s.state()
+        self.assertTrue(st.actors["m"].present(T0 + 59))
+        self.assertFalse(st.actors["m"].present(T0 + 61))
+        late = s.append("claim", "m", {"task": "x", "paths": ["a"]}, T0 + 100)
+        self.assertIn("present", s.state().denied[late.id])
 
     def test_unjoined_actor_does_nothing(self):
         e = self.a.append("claim", "ghost", {"task": "x", "paths": ["a"]}, T0 + 5)
@@ -98,13 +96,13 @@ class LeaseTests(Base):
         e = self.a.append("claim", "w2", {"task": "y", "topics": ["BUG-1042"]}, T0 + 11)
         self.assertIn(e.id, self.a.state().denied)
 
-    def test_renew_extends_and_only_holder_or_ancestor_releases(self):
+    def test_renew_extends_and_only_holder_or_a_human_releases(self):
         l = self.a.append("claim", "w1", {"task": "x", "paths": ["a"], "ttl": 60}, T0 + 10)
         self.a.append("renew", "w1", {"lease": l.id}, T0 + 50)
         self.assertTrue(self.a.state().leases[l.id].active(T0 + 100))
         nope = self.a.append("release", "w2", {"lease": l.id}, T0 + 60)
         self.assertIn("only the holder", self.a.state().ignored[nope.id])
-        self.a.append("release", "o", {"lease": l.id}, T0 + 61)
+        self.a.append("release", "human:ana", {"lease": l.id}, T0 + 61)
         self.assertFalse(self.a.state().leases[l.id].active(T0 + 62))
 
     def test_ttl_is_capped(self):
@@ -190,7 +188,7 @@ class GateTests(Base):
         p1 = self.propose("w1", T0 + 10)
         by_planner = self.a.append("approve", "p", {"proposal": p1.id}, T0 + 11)
         s = self.a.state()
-        self.assertIn("cannot approve", s.ignored[by_planner.id])
+        self.assertIn("for humans and approvers", s.ignored[by_planner.id])
         self.assertEqual(s.proposals[p1.id].status, "pending")
         self.a.append("approve", "human:ana", {"proposal": p1.id}, T0 + 12)
         self.assertEqual(self.a.state().proposals[p1.id].status, "approved")

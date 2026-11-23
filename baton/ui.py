@@ -24,6 +24,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from . import forge
+from . import machine as mc
 from . import manifest as mf
 from . import sync
 from .store import Store
@@ -55,16 +56,23 @@ def describe(e, s) -> tuple[str, str]:
     if k == "project":
         text = "created the project" if e.id == s.project_id else "changed " + ", ".join(sorted(b))
     elif k == "join":
-        text = f"joined as {b.get('role')} under {b.get('parent')}"
+        n = len((b.get("offer") or {}).get("models", []))
+        text = "joined" + (f", offering {n} model(s)" if n else "")
+    elif k == "offer":
+        text = f"is here: {len(b.get('models', []))} model(s), {b.get('slots', 0)} slot(s)"
     elif k == "apply":
-        text = f"applied as {b.get('role')}" + (f" under {b['parent']}" if b.get("parent") else "")
+        n = len((b.get("offer") or {}).get("models", []))
+        text = f"applied with a machine offering {n} model(s)"
     elif k in ("admit", "decline"):
         text = ("admitted " if k == "admit" else "declined ") + str(b.get("applicant"))
     elif k == "task":
-        text = f"posted “{b.get('title', '')}”" + (" (subtask)" if b.get("parent") else "")
+        tk = s.tasks.get(e.id)
+        text = f"posted {tk.kind if tk else b.get('kind', 'a')} package “{b.get('title', '')}”" + \
+            (f" at level {tk.level}" if tk and tk.level else "")
     elif k == "claim":
         if b.get("task_id"):
-            text = f"took “{_title(s, b['task_id'])}”"
+            tk = s.tasks.get(b["task_id"])
+            text = f"took {tk.kind + ' ' if tk else ''}“{_title(s, b['task_id'])}”" + (f" with {b['model']}" if b.get("model") else "")
         else:
             text = f"claimed {', '.join(b.get('paths', []) + b.get('topics', [])) or '?'} for {b.get('task', '')}"
     elif k == "release":
@@ -103,25 +111,30 @@ def snapshot(store: Store, now: float | None = None, me: str | None = None) -> d
     s = store.state()
     pol = store.policy()
 
-    def actor(a):
-        return {"name": a.name, "role": a.role, "parent": a.parent, "model": a.model, "effort": a.effort,
-                "children": a.children}
-
+    from . import network
+    used = network.load(s, now)
+    members = [{"name": a.name, "present": a.present(now), "offer": a.offer, "busy": used.get(a.name, 0),
+                "last_seen": a.offer_at, "joined": a.joined} for a in s.members()]
+    picks = {k: {"member": v.member, "model": v.model, "tier": v.tier} for k, v in network.assign(s, pol, now).items()}
     tasks = []
-    for t in sorted(s.tasks.values(), key=lambda x: x.created):
+    for t in sorted(s.tasks.values(), key=lambda x: (x.created, x.id)):
         status = s.task_status(t, now)
         lease = s.leases.get(t.lease) if t.lease else None
-        tasks.append({"id": t.id, "title": t.title, "detail": t.detail, "status": status, "by": t.by,
-                      "role": t.role, "parent": t.parent, "subtasks": t.subtasks, "scope": list(t.paths + t.topics),
+        tasks.append({"id": t.id, "title": t.title, "detail": t.detail, "goal": t.goal, "status": status, "by": t.by,
+                      "kind": t.kind, "level": t.level, "tier": t.tier, "of": t.of, "checks": t.checks,
+                      "phase": t.phase, "rework": t.rework, "size": t.size, "acceptance": t.acceptance,
+                      "parent": t.parent, "subtasks": t.subtasks, "scope": list(t.paths + t.topics),
+                      "depends_on": list(t.depends_on), "runs": t.runs, "report": t.report, "feedback": t.feedback,
                       "holder": lease.actor if lease and status == "taken" else None,
+                      "model": lease.model if lease and status == "taken" else None,
                       "left": round(lease.expiry - now) if lease and status == "taken" else None,
                       "summary": t.summary, "evidence": t.evidence, "created": t.created})
     leases = [{"id": l.id, "actor": l.actor, "task": l.task, "scope": list(l.paths), "topics": list(l.topics),
-               "left": round(l.expiry - now), "ttl": l.ttl} for l in s.active_leases(now)]
+               "model": l.model, "left": round(l.expiry - now), "ttl": l.ttl} for l in s.active_leases(now)]
     proposals = [{"id": p.id, "actor": p.actor, "action": p.action, "target": p.target, "payload": p.payload,
                   "status": p.status, "reason": p.reason, "decided_by": p.decided_by, "result": p.result, "ts": p.ts}
                  for p in sorted(s.proposals.values(), key=lambda p: p.ts, reverse=True)]
-    applications = [{"id": a.id, "actor": a.actor, "role": a.role, "parent": a.parent, "offer": a.offer,
+    applications = [{"id": a.id, "actor": a.actor, "offer": a.offer,
                      "note": a.note, "ts": a.ts, "status": a.status, "decided_by": a.decided_by, "reason": a.reason}
                     for a in sorted(s.applications.values(), key=lambda a: a.ts, reverse=True)]
     feed = []
@@ -135,10 +148,12 @@ def snapshot(store: Store, now: float | None = None, me: str | None = None) -> d
     refused = sum(1 for p in s.proposals.values() if p.status in ("duplicate", "over_budget", "unleased", "unknown_action"))
     return {
         "now": now, "home": str(store.home.resolve()), "events": len(ordered), "held": len(held), "bad": len(bad),
-        "humans": sorted(pol.humans), "actors": [actor(a) for a in s.actors.values()], "tasks": tasks,
+        "humans": sorted(pol.humans), "members": members, "assignment": picks, "tasks": tasks,
         "leases": leases, "proposals": proposals, "applications": applications, "feed": feed,
         "manifest": manifest_of(store, now), "join": s.join_mode,
-        "roles": [{"name": r.name, "under": r.under, "model": r.model, "effort": r.effort} for r in pol.roles.values()],
+        "network": {"max_depth": pol.max_depth, "max_children": pol.max_children, "max_rework": pol.max_rework,
+                    "orchestrate": list(pol.orchestrate), "tiers": pol.tiers, "pipeline": list(pol.pipeline),
+                    "presence_ttl": pol.presence_ttl},
         "sync": sync.status_of(store.home),
         "messages": [_message(m) for m in list(s.messages.values())[-MESSAGES:]],
         "inbox": [m.id for m in s.inbox(me)] if me else [],
@@ -151,7 +166,7 @@ def decide(store: Store, actor: str, req: dict) -> dict:
     """approve / reject / execute a proposal, or admit / decline an application, as `actor`."""
     decision = str(req.get("decision", ""))
     if decision in ("admit", "decline"):
-        body = {"applicant": str(req["applicant"])}
+        body = {"applicant": str(req["applicant"])}   # no role: the network decides what a member does
         if decision == "decline" and req.get("reason"):
             body["reason"] = str(req["reason"])
         e = store.append(decision, actor, body)
@@ -207,6 +222,47 @@ def add_link(store: Store, actor: str, req: dict) -> dict:
     if e.id in after.ignored:
         raise ValueError(after.ignored[e.id])
     return {"ok": True}
+
+
+_PROBE: dict = {}
+
+
+def _probe(fresh: bool = False, limits: bool = False) -> dict:
+    """The machine probe, cached for a minute (CPU sampling and Codex's model list take a moment)."""
+    if fresh or limits or not _PROBE or time.time() - _PROBE["at"] > 60:
+        _PROBE.clear()
+        _PROBE.update(mc.probe([], limits=limits))
+    return _PROBE
+
+
+def machine_view(ws: Workspace, fresh: bool = False, limits: bool = False) -> dict:
+    cfg = ws.machine()
+    p = _probe(fresh, limits)
+    return {"config": cfg, "probe": p, "models": mc.models(p, cfg), "suggested_slots": mc.suggested_slots(p),
+            "offer": mc.offer(p, cfg, 180.0), "tiers": list(mc.TIERS)}
+
+
+def set_machine(ws: Workspace, req: dict) -> dict:
+    changes = {}
+    if "allowed" in req:
+        if not isinstance(req["allowed"], list) or not all(isinstance(x, str) for x in req["allowed"]):
+            raise ValueError("allowed must be a list of provider:model")
+        changes["allowed"] = list(dict.fromkeys(req["allowed"]))
+    if "tiers" in req:
+        if not isinstance(req["tiers"], dict):
+            raise ValueError("tiers must map provider:model to a tier")
+        changes["tiers"] = {str(k): str(v) for k, v in req["tiers"].items()}
+    if "slots" in req:
+        changes["slots"] = None if req["slots"] in (None, "") else int(req["slots"])
+    if "name" in req:
+        name = str(req["name"]).strip()
+        if not re.fullmatch(r"[\w.@-]{1,80}", name):
+            raise ValueError("a machine name is letters, digits and . @ - _")
+        changes["name"] = name
+    if "share_hardware" in req:
+        changes["share_hardware"] = bool(req["share_hardware"])
+    ws.set_machine(**changes)
+    return machine_view(ws)
 
 
 def key_for(home: str, project_id: str | None) -> str:
@@ -304,6 +360,9 @@ def make_server(ws: Workspace, actor: str | None, host: str = "127.0.0.1", port:
             path = urlparse(self.path).path
             if path == "/":
                 return self._send(200, PAGE.read_bytes(), "text/html; charset=utf-8")
+            if path == "/api/machine":
+                return self._json(200, machine_view(ws, fresh="fresh" in (urlparse(self.path).query or ""),
+                                                    limits="limits" in (urlparse(self.path).query or "")))
             if path == "/api/projects":
                 entries, problems = directory.entries(fresh="fresh" in (urlparse(self.path).query or ""))
                 return self._json(200, {"me": actor, "projects": entries, "problems": problems,
@@ -325,9 +384,14 @@ def make_server(ws: Workspace, actor: str | None, host: str = "127.0.0.1", port:
                 return self._json(403, {"error": "wrong host"})
             if not secrets.compare_digest(self.headers.get("X-Baton-Token", ""), token):
                 return self._json(403, {"error": "missing or wrong session token: open the URL baton printed"})
+            path = urlparse(self.path).path
+            if path == "/api/machine":   # this machine's own settings: not an act in any project
+                try:
+                    return self._json(200, set_machine(ws, self._body()))
+                except (KeyError, ValueError, TypeError) as err:
+                    return self._json(400, {"error": str(err)})
             if not actor:
                 return self._json(403, {"error": "read-only: start `baton ui --actor human:<you>` to act"})
-            path = urlparse(self.path).path
             try:
                 req = self._body()
                 if path == "/api/catalogs":
@@ -338,14 +402,13 @@ def make_server(ws: Workspace, actor: str | None, host: str = "127.0.0.1", port:
                     directory.entries(fresh=True)
                     return self._json(200, {"ok": True})
                 if path == "/api/volunteer":
-                    agent = str(req.get("actor", "")).strip()
+                    agent = str(req.get("actor") or ws.machine()["name"]).strip()
                     if not re.fullmatch(r"[\w.:@-]{1,80}", agent) or agent.startswith("human:"):
-                        raise ValueError("name your agent with letters, digits and . : @ - _ (not human:...)")
-                    offer = {k: [x.strip() for x in str(req.get(k, "")).split(",") if x.strip()][:20]
-                             for k in ("skills", "models", "hardware")}
-                    offer = {k: v for k, v in offer.items() if v}
-                    out = volunteer(ws, directory.entry(str(req["project"])), agent, str(req.get("role") or "worker"),
-                                    str(req.get("parent") or "") or None, offer, str(req.get("note", ""))[:2000])
+                        raise ValueError("name the machine with letters, digits and . : @ - _ (not human:...)")
+                    offer = mc.offer(_probe(), ws.machine(), 180.0)
+                    if not offer["models"]:
+                        raise ValueError("this machine offers no model yet: choose some under This machine")
+                    out = volunteer(ws, directory.entry(str(req["project"])), agent, offer, str(req.get("note", ""))[:2000])
                     directory.entries(fresh=True)
                     return self._json(200, out)
                 m = route.match(path)

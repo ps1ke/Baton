@@ -29,7 +29,7 @@ What failed, and the rule baton takes from it:
 3. **Throughput was set by the agents, not by the reviewers.** → Every outward action has a per-actor and total
    budget per time window, counted from the shared log so no peer can exceed it alone.
 4. **Agents posted with authority they had not earned** (including the author of this document, who told a PR
-   author two PRs did not overlap without checking). → Agents only *propose*; a human (or a role the policy names)
+   author two PRs did not overlap without checking). → Agents only *propose*; a human (or a member the policy names)
    approves, and the executed result is recorded so it runs once.
 5. **One coordinator was the real single point of failure.** → No server: every peer holds the whole log and
    computes the same state from it.
@@ -49,27 +49,61 @@ Events fold in `(lamport, id)` order: every peer with the same events gets the s
 after everything its author had seen. Decisions use the *effective time* `max(ts, parents' effective times)`, so an
 event cannot be backdated before what its author already knew.
 
-### Tasks
+### Machines and the network
 
-`task {title, detail, paths, topics, role, parent}` posts work to the board; roles with `plan` in their `can` list
-(by default planners and orchestrators) and humans may post. A task can be limited to one role, and can name a
-parent task, which then waits until all its subtasks have ended. `claim {task_id}` takes a task: the lease covers the
-task's paths and topics plus the topic `task:<id>`, so even a task without paths is held by one actor at a time. The
-holder ends it with `done {task, outcome, summary, evidence}`, where outcome is `done`, `failed` or `escalated`, and
-the lease is released. A task whose lease lapses without a `done` is open again for anyone.
+The first versions had roles: a member joined as planner, orchestrator or worker, under a parent, and that fixed its
+model. It was the wrong unit. A person helping a project has a machine and some subscriptions, not a preference for
+being a "worker", and a project's need for planning, implementation and review changes by the hour. So a member is
+now a machine with an **offer**: the models its owner allowed (`provider:model`, a tier, a family), its slots (how
+many packages at once), and hardware tags. `baton machine` finds all of it out (CPU and load, memory, GPUs and VRAM,
+disk; Claude Code's login and plan, Codex's login, plan and model list, Ollama and OpenAI-compatible servers on
+localhost), and the owner only chooses.
+
+The **network** (network.py) gives each open package to one present member and model. It is a pure function of the
+folded state and the time, so every peer computes the same answer, and the fold denies a member's claim on a package
+the assignment gave to someone else. That is what "the network decides" means here: no coordinator, no election, just
+a rule everyone evaluates the same way. The rule prefers, in order: an independent reviewer (another model family,
+another machine), the cheapest tier good enough, the least loaded machine, and a hash for an even spread. A package
+nobody present can serve steps down one tier per `downgrade_after`, so a project without a frontier model still gets
+its plan made, more slowly and visibly.
+
+### Work packages and levels
+
+A `task` body is a **work package** (wp.py): title, kind, goal, context, paths, topics, acceptance (criteria and
+runnable checks), deliverables, constraints, inputs, size, needs (tier, hardware), parent, depends_on. Unknown fields
+are refused so every peer reads the same package. The report at the end is standard too: changes, verification
+(status and checks), findings (with severities), verdict, notes.
+
+Kinds are `orchestrate`, `implement`, `test`, `review`, `investigate`. An orchestrate package at level *n* is split by
+whoever the network gives it to (at the tier for level *n*: frontier, strong, standard by default) into children at
+level *n+1*, inside its paths, at most `max_children`, and only orchestrate children above `max_depth`. It then waits;
+when all its children have ended it reopens and the network gives it out again, to integrate: check the children's
+results together, post more children, or close or escalate it. Splitting and integrating are separate runs, so an
+orchestrator does not hold a slot while its children work.
+
+### The pipeline
+
+An implement package reported `done` is not done. The fold derives a test package from it (deterministic id, same
+level and paths, the policy's tier for tests), then a review package once the test passes. A test passes only on
+verification that ran and passed (`not_run` is not a pass), a review only with verdict `passed` and no critical or
+high finding. A failure sends the implement package back to the network with the check's report in its feedback,
+which the next implementer sees; after `max_rework` it escalates to the integrating orchestrator. This is the case
+study's main lesson in code: a fix that "passes" only counts once a different agent, ideally a different model family,
+has run its checks and read it.
 
 ### The runner
 
-`baton run` takes the oldest open task the actor's role may take (or a named one), launches the policy's agent
-command with `{model}` and `{effort}` from the actor's tier, gives it the task prompt (in a `{prompt}` argument if the
-template has one, else on stdin), and renews the lease every third of its ttl while the agent runs. The agent inherits
-`BATON_HOME`, `BATON_ACTOR` and `BATON_TASK`, so it can call baton itself: split the task, propose an outward action,
-or report its own outcome. If it does not, the exit status decides (`0` done, anything else failed), and the evidence
-records the exit code, the run time and a digest of the output.
+`baton run` and `baton swarm` run an agent on a package with the model the network picked, using this machine's
+command for that provider (`machine.commands`, or a default for Claude Code, Codex and local harnesses), `{model}`
+and `{effort}` filled in (effort from the tier), the prompt for the package's kind on stdin or in a `{prompt}`
+argument, and the lease renewed every third of its ttl. The agent inherits `BATON_HOME`, `BATON_ACTOR` and
+`BATON_TASK` and reports with `baton done`. If it does not report, an implement or investigate package that exited 0
+counts as done (and goes to its checks); anything else is released back to the network, and a package released
+`max_attempts` times in a round stalls for a human instead of looping.
 
-The prompt tells the agent to stay inside its lease, to send everything outward through `propose`, to check before it
-claims something about other work, and to escalate when unsure. It is advice, not enforcement: enforcement is the
-lease and the gate, which hold whatever the agent does with them.
+The prompts tell the agent to stay inside its lease, to send everything outward through `propose`, to ask when
+unsure, and, for tests and reviews, to change nothing. It is advice, not enforcement: enforcement is the lease, the
+pipeline and the gate.
 
 ### Messages
 
@@ -83,19 +117,13 @@ a task's earlier thread in the prompt, labelled as information rather than instr
 
 ### The swarm
 
-`baton swarm` is the scheduler that keeps the tree moving. Each pass it gives every idle seat one job:
-
-- *attend*, for roles that plan: the inbox, the tasks it posted that ended `escalated` or `failed`, and the tasks it
-  split whose subtasks have all ended. An item counts as handled once the seat writes in that task's thread or posts a
-  follow-up subtask, a fact in the log, so another machine or a restarted swarm agrees on what is still open. Attend
-  jobs go first and do not count against `--parallel`, because a worker may be waiting for the answer.
-- *work*: the oldest open task meant for the seat's role. Unrestricted tasks only go to roles that cannot plan, so an
-  expensive planner does not take chores.
-
-It takes the lease in its own loop, before starting the agent thread, so two seats never start on the same task. It
-stops at `--max-runs` (default 20) and, with `--once`, when nothing runs and nothing can start; a task is tried at most
-`--max-attempts` times per swarm, so a crashing agent cannot loop. These limits are the swarm's answer to the case
-study: the default is to do a bounded amount of work and stop, and to need a human to say "more".
+`baton swarm` is one machine's part in the network. Each pass it renews the machine's offer (before `presence_ttl`
+runs out, or at once when the owner changed it), answers the questions waiting for it (asked by agents working on
+packages its own agents posted, with a model of the tier of the package they came from), and takes the packages the
+assignment gives it, up to its slots, each with the picked model. It takes the lease in its own loop before starting
+the agent's thread, syncs in the background, keeps every run's transcript, and stops at `--max-runs` (default 20) or,
+with `--once`, when nothing is left for it. These limits are the answer to the case study: the default is a bounded
+amount of work, and a human says "more".
 
 ### Leases
 
@@ -103,26 +131,10 @@ study: the default is to do a bounded amount of work and stop, and to need a hum
 are exact strings (an item id such as `BUG-1042`, a failing test name). A claim that overlaps another actor's active
 lease at its effective time is denied. Two concurrent claims are both "granted locally" until the peers sync; after
 that every peer agrees the lower `(lamport, id)` one holds and the other is denied. A lease ends at `ttl` (capped by
-`max_ttl`) unless the holder renews it while it is active; the holder, its ancestors in the tree, or a human can
-release it.
+`max_ttl`) unless the holder renews it while it is active; the holder, a human or an approver can release it.
 
 **A lease is only safe to rely on after a sync.** An agent should claim, sync, and check the claim still holds before
 it starts real work.
-
-### Tiers
-
-`join {role, parent}` builds a tree. The policy says, per role, which role it sits under, its model and effort, how
-many children it may have and what it may do (`claim`, `propose`). The default:
-
-| role | under | model | effort | fan-out |
-|---|---|---|---|---|
-| planner | a human | claude-opus-5-5 | high | 4 |
-| orchestrator | planner | claude-sonnet-5-5 | medium | 6 |
-| worker | orchestrator | claude-haiku-5-5 | low | 0 |
-
-`baton whoami` prints an actor's model and effort, so the launcher of an agent reads its tier from the log rather
-than choosing it. Expensive models plan and split work; cheap ones run tests and read diffs. Authority to act
-outside never flows down the tree: it comes from the gate.
 
 ### The gate
 
@@ -132,9 +144,9 @@ outside never flows down the tree: it comes from the gate.
 - `duplicate` when an identical action (same action, target and payload) is already pending, approved or done;
 - `over_budget` when the actor, or everyone together, used the action's limit within its window;
 - `unleased` when it names paths the actor holds no lease on (or the action `needs_lease` and names none);
-- otherwise `pending`, or `approved` at once if the policy's `[gate] auto` lets the actor's role skip approval.
+- otherwise `pending`, or `approved` at once if the policy's `[gate] auto` lists the actor for that action.
 
-`approve` / `reject` come from a human in `[gate] humans` or a role in `approver_roles`, never from the proposal's
+`approve` / `reject` come from a human in `[gate] humans` or a member in `approvers`, never from the proposal's
 author. `baton execute` runs an approved proposal through the forge adapter (dry-run unless `--yes`) and appends
 `executed` with the result; a second `executed` for the same proposal is ignored.
 
@@ -149,6 +161,9 @@ author. `baton execute` runs an approved proposal through the forge adapter (dry
   forge credentials at all: only the executor, behind the gate, holds a token.
 - **Budget evasion by splitting identities.** Total budgets bound it; fan-out caps bound how many identities a planner
   can mint; signatures will bind identities to keys a human issued.
+- **Offers are claims.** A machine can offer a model it will not really use, or hardware it lacks. The pipeline
+  limits the damage (another member tests and reviews), and the transcript digest in each report helps audits; signed
+  events will at least bind each offer to a key.
 - **The policy is local.** Peers with different `policy.toml` files can reach different decisions. The policy should
   itself be versioned in the log (a `policy` event approved by a human), so every peer folds with the same one.
 
@@ -159,7 +174,7 @@ author. `baton execute` runs an approved proposal through the forge adapter (dry
 3. Verified results as first-class events (`verdict {pr, commit, command, exit, output_digest, baseline}`), so a
    review that says "tests pass" names the exact commit and command, and a claim about another PR is checked
    mechanically before it is posted.
-4. ~~Escalation routing~~ and ~~scheduling~~: done in 0.4 (`message`, `baton swarm`). Still open: per-role
+4. ~~Escalation routing~~, ~~scheduling~~ and roles chosen by the network: done in 0.4 and 0.5 (`message`, `baton swarm`). Still open: per-model
    concurrency, cost caps (tokens and money, from the agents' own reports), and swarms on several machines sharing
    one budget.
 5. Push instead of poll: a transport that tells peers about new events at once (a webhook, a small relay, or

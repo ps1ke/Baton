@@ -1,4 +1,4 @@
-# The baton protocol, version 1
+# The baton protocol, version 2
 
 Status: draft. This document defines the data formats and rules that let any number of agents and humans, on any
 number of machines, find projects, join them and work on them together without a central server. `baton` (this
@@ -56,61 +56,144 @@ An event is a JSON object (schema: [`schemas/event.schema.json`](schemas/event.s
 ## 4. Event kinds and folding
 
 Every peer computes the same state by folding the admitted events in **ascending `(lamport, id)` order** with these
-rules. An event that breaks a rule is kept in the log but has no effect ("ignored", with a reason). A claim that
-overlaps is "denied". *Effective time* is defined in section 5.
+rules. An event that breaks a rule is kept in the log but has no effect ("ignored", with a reason). A claim that is
+refused is "denied". *Effective time* is defined in section 5.
 
-Permissions come from the project's policy (`policy.toml`): `roles.<name>.can` lists `plan`, `claim`, `propose` and
-`admit`; `gate.humans` lists the human actors; `gate.approver_roles` lists roles that may also approve, execute and
-govern. Humans may do everything. Only `join` and `apply` may come from an actor that is not yet a member.
+There are two kinds of actors. **Humans** are listed in the policy (`gate.humans`) and may do everything.
+**Members** are machines: they join with an *offer* of what they can run, and they never choose a role. The network
+(section 4.3) decides which work package each member does, with which model. `gate.approvers` lists members that may
+also approve, execute, admit and change the project.
 
 | kind | body | who | effect |
 |---|---|---|---|
-| `project` | any of the manifest fields (section 6); `null` removes a field | humans, approver roles | the first one is the **genesis** (MUST have `name`); its id is the project id. Later ones update fields. |
-| `join` | `role`, `parent` | anyone, only while `join` is `open` | adds the actor to the tree (placement rules below) |
-| `apply` | `role`, optional `parent`, `offer` (object ≤ 4000 bytes canonical), `note` (≤ 2000 chars) | a non-member, unless `join` is `closed` | records a pending application; one pending per actor |
-| `admit` | `applicant`, optional `role`, `parent` | humans, approver roles, or the would-be parent (needs `admit` in `can`) | places the applicant in the tree |
-| `decline` | `applicant`, optional `reason` | as `admit` | closes the application |
-| `task` | `title`, optional `detail`, `paths`, `topics`, `role`, `parent` (task id) | `plan` | adds a task to the board |
-| `claim` | `task_id`, or `task` + `paths`/`topics`; optional `ttl` (seconds) | `claim` | grants a lease, or denies it (below) |
+| `project` | any of the manifest fields (section 6); `null` removes a field | humans, approvers | the first one is the **genesis** (MUST have `name`); its id is the project id. Later ones update fields. |
+| `join` | optional `offer` | anyone not yet a member, only while `join` is `open` | makes the actor a member; with an offer, it is present from now |
+| `apply` | `offer`, `note` (≤ 2000 chars) | a non-member, unless `join` is `closed` | a pending application; one pending per actor |
+| `admit` / `decline` | `applicant`, optional `reason` | humans, approvers | makes the applicant a member (its offer counts from now) / closes the application |
+| `offer` | an offer (4.1) | members | replaces the member's offer and marks it present for `min(ttl, presence_ttl)` |
+| `task` | a work package (4.2) | humans and approvers anywhere; members only as children of an orchestrate package they hold | adds a package to the tree |
+| `claim` | `task_id` and `model`, or `task` + `paths`/`topics`; optional `ttl` (seconds) | members (present), humans | grants a lease, or denies it (4.3) |
 | `renew` | `lease` | the holder, while the lease is active | moves the expiry to effective time + ttl |
-| `release` | `lease` | the holder, its ancestors, humans | ends the lease |
-| `done` | `task`, `outcome` (`done` `failed` `escalated`), `summary`, `evidence` (object) | the holder of the task's lease | ends the task and releases the lease |
-| `propose` | `action`, `target`, `payload` (object; `paths` in it are checked against leases) | `propose` | creates a proposal and decides its first status (below) |
-| `approve` / `reject` | `proposal`, optional `reason` | humans, approver roles; never the proposal's author | |
-| `executed` | `proposal`, `result` | humans, approver roles | marks an approved proposal done; only once |
-| `message` | `text` (1–4000 chars), optional `task`, `to` (a member), `reply_to` (a message id) | any member | adds a message to the project's conversation (below); it changes nothing else |
-
-**Placement** (join and admit): the role MUST exist; if the role is `under = "human"`, the parent MUST be a human from
-the policy; otherwise the parent MUST be a member of the role named in `under` with fewer children than its role's
-`max_children`. An actor is placed once.
+| `release` | `lease` | the holder, humans, approvers | ends the lease |
+| `done` | `task`, `outcome` (`done` `split` `failed` `escalated`), `summary`, `report` (4.2), `evidence` | the holder of the package's lease | reports the package (4.4) and releases the lease |
+| `message` | `text` (1–4000 chars), optional `task`, `to` (a member), `reply_to`, `ask` (bool) | any member or human | adds a message to the conversation (4.5); changes nothing else |
+| `propose` | `action`, `target`, `payload` (object; `paths` in it are checked against leases) | any member or human | creates a proposal and decides its first status (4.6) |
+| `approve` / `reject` | `proposal`, optional `reason` | humans, approvers; never the proposal's author | |
+| `executed` | `proposal`, `result` | humans, approvers | marks an approved proposal done; only once |
 
 **Join mode**: `open` (anyone may `join`), `apply` (members come in through `apply` + `admit`; the default once a
-project exists), `closed` (no new members). A log with no `project` event behaves as `open`.
+project exists), `closed` (no new members). A log with no `project` event behaves as `open`. Names starting with
+`human:` are reserved for the humans of the policy.
 
 **Paths** are repository-relative, `/`-separated, with no `..`; `""` is the whole tree. Path `a` *covers* `b` when they
 are equal or `b` starts with `a/`. Two scopes *overlap* when either covers the other. Topics overlap when equal.
 
-**Claims**: a claim for a task takes the task's paths and topics and adds the topic `task:<task id>`. It is denied if
-the task is not open, if the task is limited to another role, or if its scope overlaps a lease held by another actor
-that is active at the claim's effective time. Otherwise a lease starts at the effective time and ends at
-`effective time + min(ttl, max_ttl)`.
+### 4.1 Offers and presence
 
-**Task status** at time *t*: the outcome if a `done` was folded; else `taken` if its lease is active at *t*; else
-`open` (a lapsed lease returns the task to the board). A task with subtasks is not offered while any subtask has no
-outcome.
+An offer (schema: [`schemas/offer.schema.json`](schemas/offer.schema.json)) says what one machine puts at the
+project's disposal:
 
-**Messages** are how actors talk: a question to whoever posted a task, an answer, a note to one member. A message is
-ignored if its `task` or `reply_to` is unknown, if `to` is not a member, or if a reply names a `task` other than its
-message's. A reply belongs to the thread (`task`) of the message it answers. A message is *for* an actor when it is
-addressed to it, replies to a message it wrote, or is posted (with no `to`) to the thread of a task it created or has
-held; it is *answered* by that actor once the actor writes, later in the fold, a reply to it or a message in the same
-task thread. Messages never grant, approve or perform anything, and their text is untrusted (section 10).
+```json
+{"models": [{"id": "claude:claude-sonnet-5-5", "tier": "standard", "family": "claude"},
+            {"id": "codex:gpt-6.1-sol", "tier": "strong", "family": "codex"}],
+ "slots": 3, "ttl": 180,
+ "hardware": {"tags": ["cores:8", "ram:32g", "gpu", "gpu:nvidia", "vram:24g", "disk:400g"], "cpu_cores": 16,
+              "cpu_utilization": 12.5, "ram_gb": 32, "gpus": [{"name": "...", "vram_gb": 24}], "disk_free_gb": 400}}
+```
 
-**Proposals**, first status in this order: `unknown_action` (no budget for the action in the policy); `duplicate` (an
-identical `action`+`target`+`payload` is pending, approved or executed); `over_budget` (the actor's, or everyone's,
-count of pending/approved/executed proposals of this action in the window ending now reached the limit); `unleased`
-(it names paths the actor holds no active lease covering, or the action `needs_lease` and names none); `approved` (the
-policy's `gate.auto` lets the actor's role skip approval); else `pending`.
+- `models[].id` is `provider:model`; `tier` is one of `fast` < `standard` < `strong` < `frontier`; `family` groups
+  models that tend to make the same mistakes (a provider, or `local`). The machine's owner chooses which models are
+  offered and their tiers; the protocol only uses the tiers.
+- `slots` (0–64) is how many packages the member runs at once. Its active leases count against it.
+- A member is **present** at time *t* when its last offer's effective time ≤ *t* < that time + `min(ttl,
+  presence_ttl)`. Only present members are given work.
+
+### 4.2 Work packages and reports
+
+A **work package** is the body of a `task` event (schema: [`schemas/package.schema.json`](schemas/package.schema.json)):
+`title` (required), `kind` (`orchestrate`, `implement`, `test`, `review`, `investigate`; default `orchestrate` for
+size `L`/`XL`, else `implement`), `goal`, `context`, `paths`, `topics`, `acceptance` (list of `{"criterion"}` or
+`{"check", "run"}`), `deliverables`, `constraints`, `inputs`, `size` (`S` `M` `L` `XL`), `needs` (`tier`,
+`hardware` tags), `parent` (a package id), `depends_on` (sibling package ids). Unknown fields make the event ignored,
+so every peer reads the same package.
+
+- **Level**: a package without a parent is at level 0; a child is one level below its parent.
+- **Tier**: the policy's tier for the kind (for `orchestrate`, the tier of its level: `tiers.orchestrate[level]`),
+  raised to `needs.tier` if that is higher.
+- Children: only an `orchestrate` package has children. A member may post a child only while it holds the parent's
+  lease, only of kind `orchestrate`, `implement`, `investigate` or `test`, only with paths inside the parent's, at most
+  `max_children` per parent, and an `orchestrate` child only above `max_depth`.
+- `depends_on` names siblings; the package waits until all of them are `done`, and is `blocked` if one failed or
+  escalated.
+
+A **report** (the `report` of a `done`; schema: [`schemas/report.schema.json`](schemas/report.schema.json)) has
+`changes` (`[{path, summary}]`), `verification` (`{status: passed|failed|not_run, checks: [{name, status, command,
+detail}]}`; it cannot be `passed` while a check is not), `findings` (`[{severity: critical|high|medium|low|info,
+text, path, line}]`), `verdict` (`passed` or `changes_requested`, for reviews) and `notes`.
+
+### 4.3 Assignment: the network decides
+
+At any time *t* the network's **assignment** gives every open package at most one present member and one model. Every
+peer computes it from the state alone:
+
+1. Packages are taken in this order: `review` and `test`, then `orchestrate`, then `investigate`, then `implement`;
+   within a kind by level, then age, then id.
+2. The tier sought is the package's tier while any present member that has the package's hardware tags offers a model
+   of that tier or above (busy or not). Otherwise, once the package has waited `downgrade_after` × *n*, it accepts
+   the tier *n* steps lower, so work never waits forever for a model nobody offers.
+3. Candidates are present members with a free slot, the package's hardware tags, and a model of the tier sought or
+   above. Each candidate's model is its cheapest such model (for a review: preferring another family than the one
+   that wrote the change).
+4. The chosen candidate minimises, in order: for a review, using the same family as the change's author; for a test or
+   review, being the member that wrote the change; the tier distance above what is sought; its load (active leases /
+   slots); `sha256(package id + "/" + member)` as hex. Its free slots then drop by one.
+
+A member's claim on a package (`claim` with `task_id`) is **denied** unless the package is open and the assignment at
+the claim's effective time gives it to that member, and the `model` claimed is one it offers of at least the tier
+sought. A human's claim is only checked for the package being open. A claim for a package takes the package's paths
+and topics and adds the topic `task:<package id>`; any claim is denied if its scope overlaps a lease held by another
+actor that is active at the claim's effective time. A lease starts at the effective time and ends at `effective time
++ min(ttl, max_ttl)`.
+
+### 4.4 Package status and the pipeline
+
+**Status** at time *t*: the outcome (`done`, `failed`, `escalated`) if it has one; else `taken` if its lease is active;
+else `checking` (an implement package in its pipeline); else for an orchestrate package that was split, `waiting`
+until every child has an outcome and then `open` (to integrate); else `stalled` if it was claimed `max_attempts` times
+in this round without a report; else `waiting`/`blocked` by its dependencies; else `open`.
+
+`done` rules:
+
+- `split`: only for an orchestrate package that has a child without an outcome. The package waits for its children,
+  then reopens to be integrated (by whichever member the network picks). `done` on an orchestrate package is refused
+  while a child has no outcome.
+- An `implement` package reported `done` enters the **pipeline** (`[pipeline] implement`, default `test` then `review`):
+  the network posts a derived package for the first step, with id `sha256(canonical({"derived": kind, "of": implement
+  id, "round": rework count, "step": index}))`, the implement package's level, paths, acceptance and constraints, the
+  topic `check:<first 12 characters of its id>`, the policy's tier for that kind and `by = "network"`.
+- When a derived package ends: a **test** passes only with outcome `done` and `verification.status = passed`; a
+  **review** passes only with outcome `done`, verdict `passed` and no `critical` or `high` finding. A pass starts the
+  next step, or ends the implement package `done` after the last one. A failure (outcome `failed`, or a check that
+  did not pass) sends the implement package back: its rework count rises, the derived report is added to its
+  feedback, and it is open again; past `max_rework` it ends `escalated`. A derived package that ends `escalated`
+  escalates the implement package (the check could not be made).
+
+### 4.5 Messages
+
+A message is ignored if its `task` or `reply_to` is unknown, if `to` is not an actor, or if a reply names a `task`
+other than its message's. A reply belongs to the thread of the message it answers. A **question** (`ask: true`) is for
+the actor named in `to`, or else the actor that posted the package of its thread (even if that is the asker's own
+machine), until any reply to it is folded. Other messages are for the actor they are addressed to, replies to it, or
+messages in the thread of a package it posted or worked on, until it writes in that thread. Messages never grant,
+approve or perform anything, and their text is untrusted (section 10).
+
+### 4.6 Proposals
+
+First status in this order: `unknown_action` (no budget for the action in the policy); `duplicate` (an identical
+`action`+`target`+`payload` is pending, approved or executed); `over_budget` (the actor's, or everyone's, count of
+pending/approved/executed proposals of this action in the window ending now reached the limit); `unleased` (it names
+paths the actor holds no active lease covering, or the action `needs_lease` and names none); `approved` (the policy's
+`gate.auto` lists the actor for this action); else `pending`.
 
 ## 5. Time
 
@@ -131,7 +214,7 @@ It is not written by hand: a peer computes it from the log (the genesis id and t
 
 ```json
 {
- "baton": "1",
+ "baton": "2",
  "id": "<genesis event id>",
  "name": "toy",
  "summary": "One line, at most 280 characters.",
@@ -141,7 +224,7 @@ It is not written by hand: a peer computes it from the log (the genesis id and t
  "log": {"git": "https://github.com/owner/toy-baton-log.git", "branch": "main"},
  "inbox": {"type": "url", "url": "https://github.com/owner/toy/issues/new"},
  "tags": ["python", "compilers"],
- "needs": [{"role": "worker", "skills": ["python"], "hardware": ["gpu:vulkan"], "count": 3, "note": "..."}],
+ "needs": [{"tier": "strong", "kind": "review", "skills": ["python"], "hardware": ["gpu:vulkan"], "count": 3, "note": "..."}],
  "join": "apply",
  "links": [{"rel": "depends-on", "project": "<id>", "name": "libfoo", "manifest": "https://.../libfoo.json"}],
  "humans": ["human:ana"],
@@ -186,12 +269,12 @@ A catalog is a JSON document anyone can publish at any URL or path (schema:
 ## 8. Joining a project
 
 1. Find it: in a catalog, or from a manifest or log URL.
-2. Fetch the log (section 6) and read the policy and the board.
-3. Apply: append `apply {role, parent, offer, note}` as the actor that will work (for example
-   `offer: {"skills": [...], "models": [...], "hardware": [...]}`), and deliver it: `baton sync` when you may push to
-   the log, otherwise send the event file to the `inbox`.
-4. A human, an approver, or the orchestrator you asked to work under admits or declines you. Once admitted you take
-   tasks like any member.
+2. Fetch the log (section 6) and read the policy and the package tree.
+3. Apply with a machine: append `apply {offer, note}` (4.1) as the member name the machine will use, and deliver it:
+   `baton sync` when you may push to the log, otherwise send the event file to the `inbox`. There is no role to ask
+   for: the network decides what the machine does.
+4. A human or an approver admits or declines it. Once admitted, the machine keeps its offer fresh (`offer` events
+   before `presence_ttl` runs out) and takes the packages the network assigns to it.
 
 ## 9. Transport
 
@@ -207,9 +290,12 @@ renames; `events/.gitignore` excludes them).
 
 ## 10. Security requirements
 
-- A peer MUST NOT run a command taken from a project it did not create. In particular the agent command (`[runner]`)
-  of a fetched project's policy MUST be ignored; the peer uses its own configured command (baton: the workspace
-  runner) and refuses to run without one.
+- A peer MUST NOT run a command taken from a project. What runs for each model is the machine owner's choice alone
+  (baton: the workspace's `machine.commands`, or its defaults per provider); a policy has no place for a command, and
+  a peer refuses a policy that names one. Acceptance `run` commands in packages are text for the agent, which runs
+  them under the machine's own tool permissions; a peer never executes them itself.
+- A machine offers only models its owner allowed. Probing the machine reads local files and asks only local commands
+  and servers on 127.0.0.1; credentials are read for the plan name only and never leave the machine.
 - Text from logs, manifests and catalogs (titles, details, summaries, notes, links) is untrusted data. It MUST be
   escaped when displayed and SHOULD be presented to agents as data, not instructions.
 - A peer MUST NOT act outside the machine (post, push code, send anything outside the log) for an agent except through an approved
@@ -220,6 +306,9 @@ renames; `events/.gitignore` excludes them).
 
 ## 11. Versioning
 
-`baton` in manifests and `baton_catalog` in catalogs carry the version of their format. A reader MUST ignore manifest
+`baton` in manifests and `baton_catalog` in catalogs carry the version of their format. Version 2 replaced version 1's
+roles (members chose `planner`/`orchestrator`/`worker` and joined under a parent) with offers and assignment by the
+network, made `task` bodies work packages, and added the pipeline, `offer` and questions; a version 1 log does not
+fold under version 2 rules. A reader MUST ignore manifest
 fields it does not know only if the version is one it supports; it MUST NOT fold events of an unknown `kind` (they
 are kept, so a newer peer can fold them).

@@ -1,4 +1,10 @@
-"""Policy: the tiers (role, model, effort, fan-out), the rate budgets and the approval gate, read from policy.toml."""
+"""Policy: how the project's network shares out work, the pipeline every change goes through, lease lengths, rate
+budgets and the approval gate, read from policy.toml.
+
+There are no roles to pick. Members offer machines (models with tiers, slots, hardware); the network gives each work
+package to a member and a model by the rules here (see network.py). What a package needs is set by its kind and, for
+orchestration, by its level in the package tree.
+"""
 
 from __future__ import annotations
 
@@ -8,6 +14,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 _UNITS = {"s": 1, "m": 60, "h": 3600, "d": 86400}
+TIERS = ("fast", "standard", "strong", "frontier")
+KINDS = ("orchestrate", "implement", "test", "review", "investigate")
 
 
 def duration(text) -> float:
@@ -29,15 +37,8 @@ def rate(text) -> tuple[int, float] | None:
     return int(m.group(1)), duration(m.group(2))
 
 
-@dataclass
-class Role:
-    name: str
-    under: str | None          # the parent's role, or "human"
-    model: str = ""
-    effort: str = ""
-    max_children: int = 0
-    can: frozenset = frozenset()
-    runner: list[str] | None = None   # overrides [runner] cmd for this role
+def tier_index(t: str) -> int:
+    return TIERS.index(t)
 
 
 @dataclass
@@ -49,64 +50,66 @@ class Budget:
 
 @dataclass
 class Policy:
-    roles: dict[str, Role] = field(default_factory=dict)
     budgets: dict[str, Budget] = field(default_factory=dict)
     humans: frozenset = frozenset()
-    approver_roles: frozenset = frozenset()
-    auto: dict[str, frozenset] = field(default_factory=dict)   # action -> roles that skip approval
+    approvers: frozenset = frozenset()          # members that may also approve, execute, admit and govern
+    auto: dict[str, frozenset] = field(default_factory=dict)   # action -> members whose proposals skip approval
     default_ttl: float = 7200.0
     max_ttl: float = 28800.0
-    runner: list[str] = field(default_factory=list)   # the agent command template, see [runner]
+    presence_ttl: float = 180.0                 # an offer counts this long unless renewed
+    max_depth: int = 3                          # orchestration levels 0 .. max_depth-1
+    max_children: int = 8                       # packages one orchestrate package may post
+    max_rework: int = 2                         # failed checks before an implement package escalates
+    max_attempts: int = 3                       # runs without a report before a package stalls
+    downgrade_after: float = 600.0              # a package nobody can serve accepts one tier lower after this
+    orchestrate: tuple[str, ...] = ("frontier", "strong", "standard")   # tier by level
+    tiers: dict[str, str] = field(default_factory=lambda: {"implement": "standard", "test": "fast",
+                                                            "review": "strong", "investigate": "fast"})
+    pipeline: tuple[str, ...] = ("test", "review")   # what an implement package goes through before it is done
 
-    def runner_for(self, role: str) -> list[str]:
-        r = self.roles.get(role)
-        return list(r.runner) if r and r.runner else list(self.runner)
+    def tier_for(self, kind: str, level: int) -> str:
+        if kind == "orchestrate":
+            return self.orchestrate[min(level, len(self.orchestrate) - 1)]
+        return self.tiers.get(kind, "standard")
 
-    def role_of_kind(self, kind: str) -> str:
-        return {"claim": "claim", "renew": "claim", "release": "claim", "done": "claim", "task": "plan",
-                "project": "govern", "admit": "admit", "decline": "admit",
-                "propose": "propose", "message": "talk",
-                "approve": "approve", "reject": "approve", "executed": "execute"}.get(kind, kind)
+    def may_decide(self, actor: str) -> bool:
+        return actor in self.humans or actor in self.approvers
 
 
 DEFAULT = """
 # baton policy. Every peer must fold with the same file: keep it in the shared log folder.
-
-# The agent each role runs. {model} and {effort} are filled in; the task prompt goes in a "{prompt}" argument if the
-# command has one, else on stdin. BATON_HOME, BATON_ACTOR and BATON_TASK are set in its environment, so the agent can
-# call baton itself (propose, done). Any CLI agent works: swap the command for codex, aider, a script... A role can
-# override it with its own `runner = [...]`.
-[runner]
-cmd = ["claude", "-p", "--model", "{model}", "--effort", "{effort}"]
+#
+# Nobody picks a role. Members offer machines (allowed models with tiers, slots, hardware) and the network gives each
+# work package to the member and model that fit it best (cheapest tier that is good enough, least loaded, a different
+# model family for reviews). What runs on a machine is that machine's own choice (`baton machine`), never the policy's.
 
 [leases]
 default_ttl = "2h"
 max_ttl = "8h"
 
-[roles.planner]
-under = "human"
-model = "claude-opus-5-5"
-effort = "high"
-max_children = 4
-can = ["plan", "claim", "propose"]
+[network]
+presence_ttl = "3m"     # a member counts as present this long after its last offer
+max_depth = 3           # orchestration levels 0, 1, 2; deeper packages cannot be split
+max_children = 8        # packages one orchestrate package may post
+max_rework = 2          # an implement package that fails its checks this many times more escalates
+max_attempts = 3        # runs that end without a report before a package stalls for a human
+downgrade_after = "10m" # a package no present machine can serve accepts one tier lower after this ("0s": never)
 
-[roles.orchestrator]
-under = "planner"
-model = "claude-sonnet-5-5"
-effort = "medium"
-max_children = 6
-can = ["plan", "claim", "propose", "admit"]   # admit: may take applicants in as its own workers
+# The tier each kind of work needs. Tiers: fast < standard < strong < frontier.
+[tiers]
+orchestrate = ["frontier", "strong", "standard"]   # by level: 0 plans the whole, deeper levels plan parts
+implement = "standard"
+test = "fast"
+review = "strong"
+investigate = "fast"
 
-[roles.worker]
-under = "orchestrator"
-model = "claude-haiku-5-5"
-effort = "low"
-max_children = 0
-can = ["claim", "propose"]
+# Every implement package goes through these before it counts as done; a failure sends it back for rework.
+[pipeline]
+implement = ["test", "review"]
 
 [gate]
 humans = []
-approver_roles = []
+approvers = []
 
 [budgets.comment]
 per_actor = "3/1h"
@@ -129,21 +132,36 @@ def parse(text: str) -> Policy:
     leases = raw.get("leases", {})
     p.default_ttl = duration(leases.get("default_ttl", "2h"))
     p.max_ttl = duration(leases.get("max_ttl", "8h"))
-    for name, r in raw.get("roles", {}).items():
-        if name == "human":
-            raise ValueError('"human" is reserved for the actors listed in [gate] humans')
-        p.roles[name] = Role(name, r.get("under"), r.get("model", ""), r.get("effort", ""),
-                             int(r.get("max_children", 0)), frozenset(r.get("can", [])), r.get("runner"))
-    for role in p.roles.values():
-        if role.under not in (None, "human") and role.under not in p.roles:
-            raise ValueError(f"role {role.name} is under unknown role {role.under!r}")
+    net = raw.get("network", {})
+    p.presence_ttl = duration(net.get("presence_ttl", "3m"))
+    p.max_depth = int(net.get("max_depth", 3))
+    p.max_children = int(net.get("max_children", 8))
+    p.max_rework = int(net.get("max_rework", 2))
+    p.max_attempts = int(net.get("max_attempts", 3))
+    p.downgrade_after = duration(net.get("downgrade_after", "10m"))
+    tiers = dict(raw.get("tiers", {}))
+    orch = tiers.pop("orchestrate", list(p.orchestrate))
+    p.orchestrate = tuple([orch] if isinstance(orch, str) else orch) or p.orchestrate
+    p.tiers.update(tiers)
+    for t in list(p.orchestrate) + list(p.tiers.values()):
+        if t not in TIERS:
+            raise ValueError(f"unknown tier {t!r} (use {', '.join(TIERS)})")
+    for k in p.tiers:
+        if k not in KINDS:
+            raise ValueError(f"unknown kind of work {k!r} in [tiers]")
+    pipe = raw.get("pipeline", {}).get("implement", list(p.pipeline))
+    if any(k not in ("test", "review") for k in pipe):
+        raise ValueError("[pipeline] implement may list test and review")
+    p.pipeline = tuple(pipe)
     for action, b in raw.get("budgets", {}).items():
         p.budgets[action] = Budget(rate(b.get("per_actor")), rate(b.get("total")), bool(b.get("needs_lease", False)))
-    p.runner = list(raw.get("runner", {}).get("cmd", []))
     gate = raw.get("gate", {})
     p.humans = frozenset(gate.get("humans", []))
-    p.approver_roles = frozenset(gate.get("approver_roles", []))
-    p.auto = {action: frozenset(roles) for action, roles in gate.get("auto", {}).items()}
+    p.approvers = frozenset(gate.get("approvers", []))
+    p.auto = {action: frozenset(who) for action, who in gate.get("auto", {}).items()}
+    if "roles" in raw or "runner" in raw:
+        raise ValueError("this policy is from baton 0.4: roles and [runner] are gone (the network assigns work and "
+                         "each machine chooses its own agents); start from `baton init` defaults")
     return p
 
 

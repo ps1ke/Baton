@@ -1,13 +1,16 @@
-"""A machine's workspace: the projects it holds a log for, the catalogs it follows, and its own agent runner.
+"""A machine's workspace: the projects it holds a log for, the catalogs it follows, and what the machine offers.
 
 Default location: $BATON_WORKSPACE, else ~/.local/share/baton. workspace.json:
 
     {"projects": {"<project id>": {"home": "/path/to/log", "trusted": true}},
      "catalogs": ["https://example.org/catalog.json", "/path/to/catalog.json"],
-     "runner": ["claude", "-p", "--model", "{model}", "--effort", "{effort}"]}
+     "machine": {"name": "m-1a2b3c4d", "slots": 3,
+                 "allowed": ["claude:claude-sonnet-5-5", "codex:gpt-6.1-sol", "ollama:qwen3-coder:30b"],
+                 "tiers": {"ollama:qwen3-coder:30b": "standard"},
+                 "commands": {"claude": ["claude", "-p", "--model", "{model}", ...]}, "share_hardware": true}}
 
-`trusted` is true for projects created on this machine. For any other project the agent command comes from this
-file's `runner`, never from the project's policy: a stranger's project must not choose what runs on your machine.
+`trusted` is true for projects created on this machine. What runs here (`machine.commands`, or baton's defaults per
+provider) is only ever this file's choice: no project's policy can choose a command (spec section 10).
 """
 
 from __future__ import annotations
@@ -41,7 +44,8 @@ def manifest_of(store: Store, now: float | None = None) -> dict | None:
          "updated": mf.iso(s.project_updated)}
     m.setdefault("join", "apply")
     m["activity"] = {
-        "agents": sum(1 for a in s.actors.values() if a.role != "human"),
+        "agents": sum(1 for a in s.actors.values() if a.kind == "member"),
+        "present": sum(1 for a in s.actors.values() if a.kind == "member" and a.present(now)),
         "open_tasks": sum(1 for t in s.tasks.values() if s.task_status(t, now) == "open"),
         "running": sum(1 for t in s.tasks.values() if s.task_status(t, now) == "taken"),
         "done": sum(1 for t in s.tasks.values() if t.outcome == "done"),
@@ -112,13 +116,29 @@ class Workspace:
             raise KeyError(f"no local copy of project {project_id[:12]}")
         return Store(entry["home"])
 
-    def runner(self) -> list[str]:
-        return list(self.load().get("runner") or [])
+    # -- this machine -------------------------------------------------------------------------------------------
+    def machine(self) -> dict:
+        from . import machine as mc
+        cfg = {**mc.DEFAULTS, **(self.load().get("machine") or {})}
+        cfg["name"] = cfg.get("name") or mc.default_name()
+        return cfg
 
-    def set_runner(self, cmd: list[str]):
+    def set_machine(self, **changes) -> dict:
+        from . import machine as mc
         d = self.load()
-        d["runner"] = list(cmd)
+        cfg = {**mc.DEFAULTS, **(d.get("machine") or {})}
+        for k, v in changes.items():
+            if k not in mc.DEFAULTS:
+                raise KeyError(f"unknown machine setting {k!r}")
+            cfg[k] = v
+        if cfg.get("slots") is not None and not (isinstance(cfg["slots"], int) and 0 <= cfg["slots"] <= 64):
+            raise ValueError("slots must be 0..64")
+        for ref, tier in cfg.get("tiers", {}).items():
+            if tier not in mc.TIERS:
+                raise ValueError(f"{ref}: tier must be one of {', '.join(mc.TIERS)}")
+        d["machine"] = cfg
         self.save(d)
+        return self.machine()
 
     def clone(self, m: dict) -> Store:
         """Fetch a project's log from its manifest's log.git, and check it really is that project."""
@@ -220,13 +240,12 @@ def publish(catalog_path: Path, m: dict) -> dict:
     return cat
 
 
-def volunteer(ws: "Workspace", entry: dict, actor: str, role: str, parent: str | None, offer: dict, note: str) -> dict:
-    """Apply to help a project: fetch its log if needed, append an `apply`, and say how to deliver it."""
+def volunteer(ws: "Workspace", entry: dict, actor: str, offer: dict, note: str) -> dict:
+    """Apply to help a project with this machine: fetch its log if needed, append an `apply` with the machine's offer
+    (no role: the network decides what the machine does), and say how to deliver it."""
     m = entry["manifest"]
     store = Store(entry["home"]) if entry.get("home") else ws.clone(m)
-    body = {"role": role, "offer": offer, "note": note}
-    if parent:
-        body["parent"] = parent
+    body = {"offer": offer, "note": note}
     e = store.append("apply", actor, body)
     s = store.state()
     if e.id in s.ignored:

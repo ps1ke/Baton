@@ -1,0 +1,85 @@
+{
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "$id": "https://baton.invalid/schemas/2/offer.schema.json",
+ "title": "baton machine offer (protocol 2)",
+ "description": "The body of an `offer` event, and the `offer` of `join` and `apply` (spec section 4.1). At most 8000 bytes canonical.",
+ "type": "object",
+ "properties": {
+  "models": {
+   "type": "array",
+   "maxItems": 50,
+   "items": {
+    "type": "object",
+    "required": [
+     "id",
+     "tier"
+    ],
+    "properties": {
+     "id": {
+      "type": "string",
+      "pattern": "^[^:]+:.+$"
+     },
+     "tier": {
+      "enum": [
+       "fast",
+       "standard",
+       "strong",
+       "frontier"
+      ]
+     },
+     "family": {
+      "type": "string"
+     }
+    }
+   }
+  },
+  "slots": {
+   "type": "integer",
+   "minimum": 0,
+   "maximum": 64
+  },
+  "ttl": {
+   "type": "number",
+   "minimum": 0
+  },
+  "hardware": {
+   "type": "object",
+   "properties": {
+    "tags": {
+     "type": "array",
+     "maxItems": 40,
+     "items": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 40
+     }
+    },
+    "cpu_cores": {
+     "type": "integer"
+    },
+    "cpu_utilization": {
+     "type": [
+      "number",
+      "null"
+     ]
+    },
+    "ram_gb": {
+     "type": [
+      "number",
+      "null"
+     ]
+    },
+    "gpus": {
+     "type": "array",
+     "maxItems": 8
+    },
+    "disk_free_gb": {
+     "type": [
+      "number",
+      "null"
+     ]
+    }
+   }
+  }
+ }
+}

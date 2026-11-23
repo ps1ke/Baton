@@ -1,134 +1,125 @@
-import json
 import os
-import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest import mock
 
-from baton import policy as pol
 from baton import swarm
-from baton.store import Store
+from baton.workspace import Workspace
 
-T0 = 1_000_000.0
-BATON = f"import subprocess, sys, json\nb = [sys.executable, '-m', 'baton']\n"
+from helpers import agent, fake_probe, peer
 
-# A worker that asks its orchestrator which file to change, waits for the answer and reports it.
-ASKS = BATON + """r = subprocess.run(b + ['message', 'which file?', '--wait', '60s'], capture_output=True, text=True)
-answer = r.stdout.strip().splitlines()[-1]
-subprocess.run(b + ['done', __import__('os').environ['BATON_TASK'], '--summary', 'used ' + answer.split('] ')[-1]])
-"""
-# A worker that gives up on anything it does not like.
-ESCALATES = BATON + """import os
-task = os.environ['BATON_TASK']
-out = subprocess.run(b + ['thread', task], capture_output=True, text=True).stdout
-if 'too big' in out:
-    subprocess.run(b + ['done', task, '--outcome', 'escalated', '--summary', 'needs splitting'])
-else:
-    print('fixed it')
-"""
-# An orchestrator that answers every question and splits every escalated task in two.
-ORCH = BATON + """import re
+# One stand-in agent for every kind of work, driven by its prompt, calling baton like a real agent would.
+AGENT = r"""
+import os, re, subprocess, sys
 prompt = sys.stdin.read()
-for m in json.loads(subprocess.run(b + ['inbox', '--json'], capture_output=True, text=True).stdout):
-    subprocess.run(b + ['message', 'parser.py', '--reply', m['id']])
-for tid in re.findall(r'task ([0-9a-f]{12}) .* ended escalated', prompt):
-    for part in ('half one', 'half two'):
-        subprocess.run(b + ['task', part, '--parent', tid, '--role', 'worker'])
+b = [sys.executable, '-m', 'baton']
+def baton(*args):
+    r = subprocess.run(b + list(args), capture_output=True, text=True)
+    if r.returncode not in (0, 3):
+        print('baton failed:', args, r.stdout, r.stderr, file=sys.stderr)
+    return r.stdout
+task = os.environ.get('BATON_TASK', '')
+model = sys.argv[1] if len(sys.argv) > 1 else '?'
+if 'asked questions' in prompt:
+    for mid in re.findall(r'message id ([0-9a-f]{12})', prompt):
+        baton('message', 'use ISO 8601', '--reply', mid)
+elif 'All the children of this package have ended' in prompt:
+    baton('done', task, '--summary', 'integrated')
+elif 'You orchestrate' in prompt:
+    baton('task', 'dates', '--parent', task, '--kind', 'implement', '--path', 'src/dates', '--check', 'unit=true')
+    baton('task', 'ask about formats', '--parent', task, '--kind', 'implement', '--path', 'src/fmt', '--check', 'unit=true')
+    baton('done', task, '--outcome', 'split', '--summary', 'two parts')
+elif '(implement,' in prompt:
+    said = ''
+    if 'ask about formats' in prompt:
+        said = baton('message', 'which format?', '--ask', '--wait', '60s').strip().splitlines()[-1]
+    baton('done', task, '--summary', 'built ' + said.split('] ')[-1], '--change', 'src/x.py', '--check', 'unit=passed:true')
+elif '(test,' in prompt:
+    baton('done', task, '--summary', '1 passed', '--check', 'unit=passed:true')
+elif '(review,' in prompt:
+    baton('done', task, '--summary', 'reviewed with ' + model, '--verdict', 'passed')
 """
 
-
-def policy(worker: str, orch: str) -> str:
-    text = pol.DEFAULT.replace('humans = []', 'humans = ["human:ana"]')
-    text = text.replace('can = ["claim", "propose"]',
-                        'can = ["claim", "propose"]\nrunner = ' + json.dumps([sys.executable, "-c", worker]))
-    text = text.replace('can = ["plan", "claim", "propose", "admit"]',
-                        'can = ["plan", "claim", "propose", "admit"]\nrunner = ' + json.dumps([sys.executable, "-c", orch]))
-    return text
+ALL = ["claude:claude-haiku-5-5", "claude:claude-sonnet-5-5", "claude:claude-opus-5-5", "claude:claude-fable-5-2"]
 
 
 class Swarm(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        self.env = mock.patch.dict(os.environ, {"BATON_WORKSPACE": str(Path(self.tmp.name) / "ws")})
+        self.root = Path(self.tmp.name)
+        self.env = mock.patch.dict(os.environ, {"BATON_WORKSPACE": str(self.root / "ws")})
         self.env.start()
-        self.s = Store(Path(self.tmp.name) / "log")
-        self.s.init()
-        a = self.s.append
-        a("join", "p", {"role": "planner", "parent": "human:ana"}, T0)
-        a("join", "o", {"role": "orchestrator", "parent": "p"}, T0 + 1)
-        a("join", "w1", {"role": "worker", "parent": "o"}, T0 + 2)
-        a("join", "w2", {"role": "worker", "parent": "o"}, T0 + 3)
+        self.s = peer(self.root, "log")
         self.lines = []
 
     def tearDown(self):
         self.env.stop()
         self.tmp.cleanup()
 
-    def make(self, worker, orch=ORCH, **kw):
-        (self.s.home / "policy.toml").write_text(policy(worker, orch), encoding="utf-8")
+    def cfg(self, allowed, slots=2, name="m1"):
+        return {**Workspace().machine(), "name": name, "allowed": allowed, "slots": slots,
+                "commands": {"claude": agent(AGENT) + ["{model}"], "codex": agent(AGENT) + ["{model}"]}}
+
+    def swarm(self, name, allowed, providers=("claude",), **kw):
+        self.s.append("join", name, {})
         kw.setdefault("once", True)
         kw.setdefault("interval", 0.1)
-        kw.setdefault("timeout", 60)
-        return swarm.Swarm(self.s, kw.pop("seats", ["o", "w1", "w2"]), transcripts=Path(self.tmp.name) / "runs",
-                           log=self.lines.append, **kw)
+        kw.setdefault("timeout", 90)
+        return swarm.Swarm(self.s, name, self.cfg(allowed, name=name), fake_probe(*providers),
+                           transcripts=self.root / "runs" / name, log=self.lines.append, **kw)
 
-    def test_plan_attends_first_and_keeps_planners_off_chores(self):
-        sw = self.make("print(1)")
-        chore = self.s.append("task", "o", {"title": "chore"}, T0 + 5).id
-        q = self.s.append("message", "w1", {"text": "?", "to": "o"}, T0 + 6)
-        jobs = sw.plan(self.s.state(), T0 + 7)
-        kinds = {j.seat: (j.kind, j.task.id if j.task else [i["id"] for i in j.items]) for j in jobs}
-        self.assertEqual(kinds["o"], ("attend", [q.id]))
-        self.assertEqual(kinds["w1"], ("work", chore))
-        self.assertNotIn("w2", kinds)                        # one task, one taker
-        sw2 = self.make("print(1)", seats=["p"])
-        self.assertEqual(sw2.plan(self.s.state(), T0 + 7), [])   # the planner leaves the unrestricted chore alone
+    def root_package(self):
+        return self.s.append("task", "human:ana", {"title": "date handling", "size": "L", "paths": ["src"],
+                                                   "goal": "dates parse and print"}).id
 
-    def test_parallel_and_attempt_limits(self):
-        sw = self.make("print(1)", parallel=1, max_attempts=1)
-        a = self.s.append("task", "o", {"title": "a", "paths": ["a"]}, T0 + 5).id
-        self.s.append("task", "o", {"title": "b", "paths": ["b"]}, T0 + 6)
-        self.assertEqual(len([j for j in sw.plan(self.s.state(), T0 + 7) if j.kind == "work"]), 1)
-        sw.attempts[a] = 1
-        self.assertEqual([j.task.title for j in sw.plan(self.s.state(), T0 + 7)], ["b"])
-
-    def test_a_worker_asks_and_the_orchestrator_answers(self):
-        tid = self.s.append("task", "o", {"title": "fix the parser", "paths": ["src"]}).id
-        results = self.make(ASKS).run()
+    def test_one_machine_does_every_level_and_check_and_answers_its_own_workers(self):
+        root = self.root_package()
+        results = self.swarm("m1", ALL).run()
         s = self.s.state()
-        self.assertEqual(s.tasks[tid].outcome, "done", self.lines)
-        self.assertEqual(s.tasks[tid].summary, "used parser.py")
-        self.assertEqual([m.text for m in s.thread(tid)], ["which file?", "parser.py"])
-        self.assertIn(("o", "attend", "done"), results)
-        self.assertTrue(any(f.name.endswith("attend.log") for f in (Path(self.tmp.name) / "runs").iterdir()))
+        self.assertEqual(s.tasks[root].outcome, "done", "\n".join(self.lines))
+        self.assertEqual(s.tasks[root].summary, "integrated")
+        kids = [s.tasks[c] for c in s.tasks[root].subtasks]
+        self.assertTrue(all(k.outcome == "done" and len(k.checks) == 2 for k in kids), [(k.title, k.outcome) for k in kids])
+        asker = next(k for k in kids if k.title == "ask about formats")
+        self.assertEqual(asker.summary, "built use ISO 8601")                 # asked, was answered, used it
+        self.assertEqual(s.tasks[root].runs[0]["model"], "claude:claude-fable-5-2")   # level 0: frontier
+        self.assertEqual(kids[0].runs[0]["model"], "claude:claude-sonnet-5-5")        # implement: standard
+        self.assertEqual(s.tasks[kids[0].checks[0]].runs[0]["model"], "claude:claude-haiku-5-5")   # test: fast
+        kinds = sorted(k for k, _, _ in results)
+        self.assertIn("answer", kinds)
+        self.assertTrue(any(f.name.endswith("orchestrate.log") for f in (self.root / "runs" / "m1").iterdir()))
 
-    def test_escalated_work_is_split_and_finished(self):
-        big = self.s.append("task", "o", {"title": "rewrite everything", "detail": "too big", "role": "worker"}).id
-        self.s.append("message", "o", {"text": "too big for one run", "task": big})
-        results = self.make(ESCALATES).run()
+    def test_two_machines_split_the_work_and_reviews_cross_families(self):
+        root = self.root_package()
+        m1 = self.swarm("m1", ALL)
+        m2 = self.swarm("m2", ["codex:gpt-6.1-sol", "codex:gpt-6.1-luna"], providers=("codex",))
+        out = {}
+        threads = [threading.Thread(target=lambda sw=sw: out.setdefault(sw.me, sw.run())) for sw in (m1, m2)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
         s = self.s.state()
-        self.assertEqual(s.tasks[big].outcome, "escalated", self.lines)
-        halves = [s.tasks[c] for c in s.tasks[big].subtasks]
-        self.assertEqual(sorted(t.title for t in halves), ["half one", "half two"])
-        self.assertTrue(all(t.outcome == "done" for t in halves), self.lines)
-        self.assertEqual(swarm.attention(s, "o"), [])            # nothing left for o
-        self.assertEqual(sum(1 for r in results if r[1] == "work"), 3)
+        self.assertEqual(s.tasks[root].outcome, "done", "\n".join(self.lines))
+        reviews = [t for t in s.tasks.values() if t.kind == "review"]
+        self.assertEqual(len(reviews), 2)
+        for r in reviews:
+            writer = s.tasks[r.of].runs[-1]["model"].split(":")[0]
+            self.assertNotEqual(r.runs[-1]["model"].split(":")[0], writer, r.summary)   # another family reviewed
+        self.assertTrue(out["m1"] and out["m2"])                                       # both did work
 
-    def test_max_runs_stops_the_swarm(self):
-        for i in range(5):
-            self.s.append("task", "o", {"title": f"t{i}", "paths": [f"p{i}"]})
-        results = self.make("print('ok')", max_runs=3, once=False).run()
-        self.assertEqual(len(results), 3)
-        self.assertTrue(any("reached 3 runs" in l for l in self.lines))
-        self.assertEqual(len(self.s.state().open_tasks(10**12)), 2)
-
-    def test_unknown_or_human_seats_are_refused(self):
-        with self.assertRaises(KeyError):
-            self.make("print(1)", seats=["ghost"])
-        (self.s.home / "policy.toml").write_text(policy("print(1)", ORCH), encoding="utf-8")
+    def test_max_runs_stops_it_and_a_machine_without_models_is_refused(self):
+        for i in range(4):
+            self.s.append("task", "human:ana", {"title": f"t{i}", "paths": [f"p{i}"], "kind": "investigate"})
+        results = self.swarm("m1", ALL, max_runs=2, once=False).run()
+        self.assertEqual(len(results), 2)
+        self.assertTrue(any("reached 2 runs" in l for l in self.lines))
         with self.assertRaises(ValueError):
-            swarm.Swarm(self.s, ["human:ana"])
+            self.swarm("m3", [])
+        with self.assertRaises(ValueError):
+            swarm.Swarm(self.s, "human:ana", self.cfg(ALL), fake_probe())
 
 
 if __name__ == "__main__":

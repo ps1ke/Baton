@@ -9,7 +9,7 @@ from __future__ import annotations
 import re
 from datetime import datetime, timezone
 
-PROTOCOL = "1"
+PROTOCOL = "2"
 CATALOG = "1"
 JOIN_MODES = ("open", "apply", "closed")
 RELS = ("depends-on", "dependency-of", "related", "fork-of", "upstream", "downstream", "successor", "predecessor")
@@ -83,9 +83,13 @@ def check_fields(d: dict) -> list[str]:
             errors.append("needs must be a list of at most 50 entries")
         else:
             for i, n in enumerate(needs):
-                if not isinstance(n, dict) or not isinstance(n.get("role"), str) or not n["role"]:
-                    errors.append(f"needs[{i}].role is required")
+                if not isinstance(n, dict):
+                    errors.append(f"needs[{i}] must be an object")
                     continue
+                if n.get("kind") is not None and n["kind"] not in ("orchestrate", "implement", "test", "review", "investigate"):
+                    errors.append(f"needs[{i}].kind must be a kind of work")
+                if n.get("tier") is not None and n["tier"] not in ("fast", "standard", "strong", "frontier"):
+                    errors.append(f"needs[{i}].tier must be fast, standard, strong or frontier")
                 _strings(errors, f"needs[{i}].skills", n.get("skills"), 40, 20)
                 _strings(errors, f"needs[{i}].hardware", n.get("hardware"), 80, 10)
                 if "count" in n and (not isinstance(n["count"], int) or isinstance(n["count"], bool) or not 0 <= n["count"] <= 10000):

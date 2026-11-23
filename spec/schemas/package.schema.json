@@ -1,0 +1,161 @@
+{
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "$id": "https://baton.invalid/schemas/2/package.schema.json",
+ "title": "baton work package (protocol 2)",
+ "description": "The body of a `task` event (spec section 4.2).",
+ "type": "object",
+ "required": [
+  "title"
+ ],
+ "additionalProperties": false,
+ "properties": {
+  "title": {
+   "type": "string",
+   "minLength": 1,
+   "maxLength": 200
+  },
+  "kind": {
+   "enum": [
+    "orchestrate",
+    "implement",
+    "test",
+    "review",
+    "investigate"
+   ]
+  },
+  "goal": {
+   "type": "string",
+   "maxLength": 2000
+  },
+  "context": {
+   "type": "string",
+   "maxLength": 10000
+  },
+  "detail": {
+   "type": "string",
+   "maxLength": 10000,
+   "description": "older name of context"
+  },
+  "paths": {
+   "type": "array",
+   "maxItems": 50,
+   "items": {
+    "type": "string",
+    "minLength": 1,
+    "maxLength": 500
+   }
+  },
+  "topics": {
+   "type": "array",
+   "maxItems": 20,
+   "items": {
+    "type": "string",
+    "minLength": 1,
+    "maxLength": 100
+   }
+  },
+  "deliverables": {
+   "type": "array",
+   "maxItems": 20,
+   "items": {
+    "type": "string",
+    "minLength": 1,
+    "maxLength": 200
+   }
+  },
+  "constraints": {
+   "type": "array",
+   "maxItems": 30,
+   "items": {
+    "type": "string",
+    "minLength": 1,
+    "maxLength": 500
+   }
+  },
+  "inputs": {
+   "type": "array",
+   "maxItems": 20,
+   "items": {
+    "type": "string",
+    "minLength": 1,
+    "maxLength": 500
+   }
+  },
+  "acceptance": {
+   "type": "array",
+   "maxItems": 30,
+   "items": {
+    "type": "object",
+    "anyOf": [
+     {
+      "required": [
+       "criterion"
+      ]
+     },
+     {
+      "required": [
+       "run"
+      ]
+     }
+    ],
+    "properties": {
+     "criterion": {
+      "type": "string",
+      "maxLength": 1000
+     },
+     "check": {
+      "type": "string",
+      "maxLength": 1000
+     },
+     "run": {
+      "type": "string",
+      "maxLength": 1000
+     }
+    }
+   }
+  },
+  "size": {
+   "enum": [
+    "S",
+    "M",
+    "L",
+    "XL"
+   ]
+  },
+  "needs": {
+   "type": "object",
+   "additionalProperties": false,
+   "properties": {
+    "tier": {
+     "enum": [
+      "fast",
+      "standard",
+      "strong",
+      "frontier"
+     ]
+    },
+    "hardware": {
+     "type": "array",
+     "maxItems": 10,
+     "items": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 40
+     }
+    }
+   }
+  },
+  "parent": {
+   "type": "string",
+   "pattern": "^[0-9a-f]{64}$"
+  },
+  "depends_on": {
+   "type": "array",
+   "maxItems": 20,
+   "items": {
+    "type": "string",
+    "pattern": "^[0-9a-f]{64}$"
+   }
+  }
+ }
+}
