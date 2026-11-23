@@ -37,8 +37,17 @@ Rules:
 """
 
 
+SLOTS = ("model", "effort", "prompt", "task", "actor")
+
+
 def render(template: list[str], values: dict) -> list[str]:
-    return [part.format(**values) for part in template]
+    """Fill {model} {effort} {prompt} {task} {actor}; every other brace is left alone (commands often contain some)."""
+    out = []
+    for part in template:
+        for k in SLOTS:
+            part = part.replace("{" + k + "}", str(values.get(k, "")))
+        out.append(part)
+    return out
 
 
 def thread_text(messages, limit: int = 20) -> str:
@@ -73,21 +82,7 @@ class Run:
             self.task = free[0]
 
     def template(self) -> list[str]:
-        """The agent command. A project this machine did not create never chooses it: its policy's runner is ignored
-        and the workspace's own runner is used (spec/PROTOCOL.md, section 10)."""
-        from .workspace import Workspace
-        ws = Workspace()
-        hit = ws.entry_for(self.store.home)
-        if hit and not hit[1].get("trusted"):
-            template = ws.runner()
-            if not template:
-                raise PermissionError("this project was fetched from elsewhere, so its policy cannot choose what runs "
-                                      "here: set your own agent with `baton workspace runner -- <command ...>`")
-            return template
-        template = self.store.policy().runner_for(self.me.role) or ws.runner()
-        if not template:
-            raise ValueError("no agent command: set [runner] cmd in the policy or `baton workspace runner`")
-        return template
+        return template_for(self.store, self.me.role)
 
     def prompt(self) -> str:
         return prompt_for(self.task, self.me, self.state.thread(self.task.id))
@@ -107,8 +102,12 @@ class Run:
             raise RuntimeError(f"could not take the task: {s.denied.get(e.id) or s.ignored.get(e.id)}")
         return e.id
 
-    def go(self, timeout: float | None = None, log=print) -> str:
-        lease_id = self.take()
+    def env(self) -> dict:
+        return agent_env(self.store, self.actor, self.task.id)
+
+    def go(self, timeout: float | None = None, log=print, lease_id: str | None = None, transcript=None) -> str:
+        """Take the task (unless `lease_id` says it is already taken), run the agent, record the outcome."""
+        lease_id = lease_id or self.take()
         ttl = self.store.state().leases[lease_id].ttl
         stop = threading.Event()
 
@@ -116,24 +115,13 @@ class Run:
             while not stop.wait(max(1.0, ttl / 3)):
                 self.store.append("renew", self.actor, {"lease": lease_id})
 
-        env = {**os.environ, "BATON_HOME": str(self.store.home.resolve()), "BATON_ACTOR": self.actor,
-               "BATON_TASK": self.task.id,
-               "PYTHONPATH": os.pathsep.join(filter(None, [PACKAGE_ROOT, os.environ.get("PYTHONPATH")]))}
         cmd = self.command()
         log(f"{self.actor} [{self.me.role} {self.me.model} {self.me.effort}] takes {self.task.id[:12]}: {self.task.title}")
         t = threading.Thread(target=keep_alive, daemon=True)
         t.start()
         started = self.now()
         try:
-            r = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=timeout,
-                               input=self.prompt() if self.uses_stdin() else None)
-            code, said, out = r.returncode, r.stdout or "", (r.stdout or "") + (r.stderr or "")
-        except subprocess.TimeoutExpired as err:
-            code, said = -1, f"timed out after {timeout}s"
-            out = said + "\n" + (err.stdout.decode("utf-8", "replace") if isinstance(err.stdout, bytes) else err.stdout or "")
-        except OSError as err:
-            code = -2
-            said = out = f"could not start {cmd[0]}: {err}"
+            code, said, out = launch(cmd, self.env(), self.prompt() if self.uses_stdin() else None, timeout, transcript)
         finally:
             stop.set()
             t.join(timeout=5)
@@ -151,3 +139,51 @@ class Run:
                              "command": cmd[0]}})
         log(f"{self.actor}: {self.task.id[:12]} {outcome}")
         return outcome
+
+
+def template_for(store: Store, role: str) -> list[str]:
+    """The agent command for a role. A project this machine did not create never chooses it: its policy's runner is
+    ignored and the workspace's own runner is used (spec/PROTOCOL.md, section 10)."""
+    from .workspace import Workspace
+    ws = Workspace()
+    hit = ws.entry_for(store.home)
+    if hit and not hit[1].get("trusted"):
+        template = ws.runner()
+        if not template:
+            raise PermissionError("this project was fetched from elsewhere, so its policy cannot choose what runs "
+                                  "here: set your own agent with `baton workspace runner -- <command ...>`")
+        return template
+    template = store.policy().runner_for(role) or ws.runner()
+    if not template:
+        raise ValueError("no agent command: set [runner] cmd in the policy or `baton workspace runner`")
+    return template
+
+
+def agent_env(store: Store, actor: str, task_id: str | None = None) -> dict:
+    env = {**os.environ, "BATON_HOME": str(store.home.resolve()), "BATON_ACTOR": actor,
+           "PYTHONPATH": os.pathsep.join(filter(None, [PACKAGE_ROOT, os.environ.get("PYTHONPATH")]))}
+    env.pop("BATON_TASK", None)
+    if task_id:
+        env["BATON_TASK"] = task_id
+    return env
+
+
+def launch(cmd, env, stdin_text, timeout, transcript=None) -> tuple[int, str, str]:
+    """Run an agent command: (exit code, its stdout, stdout+stderr). Never raises for the agent's own failures."""
+    try:
+        r = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=timeout, input=stdin_text)
+        code, said, out = r.returncode, r.stdout or "", (r.stdout or "") + (r.stderr or "")
+    except subprocess.TimeoutExpired as err:
+        code, said = -1, f"timed out after {timeout}s"
+        out = said + "\n" + (err.stdout.decode("utf-8", "replace") if isinstance(err.stdout, bytes) else err.stdout or "")
+    except OSError as err:
+        code = -2
+        said = out = f"could not start {cmd[0]}: {err}"
+    if transcript:
+        try:
+            os.makedirs(os.path.dirname(os.path.abspath(transcript)), exist_ok=True)
+            with open(transcript, "w", encoding="utf-8") as f:
+                f.write(f"$ {' '.join(cmd)}\n# exit {code}\n{out}")
+        except OSError:
+            pass
+    return code, said, out

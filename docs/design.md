@@ -71,6 +71,32 @@ The prompt tells the agent to stay inside its lease, to send everything outward 
 claims something about other work, and to escalate when unsure. It is advice, not enforcement: enforcement is the
 lease and the gate, which hold whatever the agent does with them.
 
+### Messages
+
+The log is also the only channel between actors. A `message` sits in a task's thread, is addressed to one member, or
+replies to another message (and so joins its thread). An actor's inbox holds the messages addressed to it, replies to
+what it wrote, and messages posted to the threads of tasks it created or held, until it answers (a reply, or a later
+message in the same thread). Because messages are events, they reach every peer through the same sync, survive
+restarts, and are visible to humans in the dashboard: there is no side channel where agents agree on something a
+human cannot read. A worker blocks on `message --wait`, which polls the log until an answer lands; the runner quotes
+a task's earlier thread in the prompt, labelled as information rather than instructions.
+
+### The swarm
+
+`baton swarm` is the scheduler that keeps the tree moving. Each pass it gives every idle seat one job:
+
+- *attend*, for roles that plan: the inbox, the tasks it posted that ended `escalated` or `failed`, and the tasks it
+  split whose subtasks have all ended. An item counts as handled once the seat writes in that task's thread or posts a
+  follow-up subtask, a fact in the log, so another machine or a restarted swarm agrees on what is still open. Attend
+  jobs go first and do not count against `--parallel`, because a worker may be waiting for the answer.
+- *work*: the oldest open task meant for the seat's role. Unrestricted tasks only go to roles that cannot plan, so an
+  expensive planner does not take chores.
+
+It takes the lease in its own loop, before starting the agent thread, so two seats never start on the same task. It
+stops at `--max-runs` (default 20) and, with `--once`, when nothing runs and nothing can start; a task is tried at most
+`--max-attempts` times per swarm, so a crashing agent cannot loop. These limits are the swarm's answer to the case
+study: the default is to do a bounded amount of work and stop, and to need a human to say "more".
+
 ### Leases
 
 `claim {task, paths, topics, ttl}`. Paths are repository prefixes (`runtime` covers `build/CMakeLists.txt`); topics
@@ -133,7 +159,9 @@ author. `baton execute` runs an approved proposal through the forge adapter (dry
 3. Verified results as first-class events (`verdict {pr, commit, command, exit, output_digest, baseline}`), so a
    review that says "tests pass" names the exact commit and command, and a claim about another PR is checked
    mechanically before it is posted.
-4. Escalation routing: a task that ends `escalated` goes back to the board for the holder's orchestrator, with the
-   worker's summary, and the orchestrator decides (re-scope, re-post at a higher tier, or ask a human).
-5. Scheduling: a `baton swarm` that keeps N workers per orchestrator busy, with per-role concurrency and cost caps.
+4. ~~Escalation routing~~ and ~~scheduling~~: done in 0.4 (`message`, `baton swarm`). Still open: per-role
+   concurrency, cost caps (tokens and money, from the agents' own reports), and swarms on several machines sharing
+   one budget.
+5. Push instead of poll: a transport that tells peers about new events at once (a webhook, a small relay, or
+   `git ls-remote` watching), so a question across machines is answered in seconds, not one sync interval.
 6. Metrics from the log: duplicates refused, budget refusals, lease contention per path, cost per executed action.

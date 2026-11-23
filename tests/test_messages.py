@@ -118,5 +118,13 @@ class Messages(unittest.TestCase):
         self.assertIn("message", text)
 
 
+class Render(unittest.TestCase):
+    def test_only_named_slots_are_filled(self):
+        cmd = runner.render(["agent", "--model", "{model}", "-c", "re.findall(r'[0-9]{12}', x); d = {'a': 1}"],
+                            {"model": "m1", "effort": "low"})
+        self.assertEqual(cmd[2], "m1")
+        self.assertEqual(cmd[4], "re.findall(r'[0-9]{12}', x); d = {'a': 1}")
+
+
 if __name__ == "__main__":
     unittest.main()

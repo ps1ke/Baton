@@ -40,6 +40,7 @@ class Syncer:
         self.homes = homes if callable(homes) else (lambda: homes)
         self.every, self.remote, self.branch, self.log = max(1.0, every), remote, branch, log
         self._stop = threading.Event()
+        self._wake = threading.Event()
         self._next: dict[str, float] = {}
         self._backoff: dict[str, float] = {}
         self._said: dict[str, str] = {}
@@ -69,6 +70,11 @@ class Syncer:
             self._said[key] = error
         return done
 
+    def poke(self):
+        """Sync every log on the next pass (something worth sending just happened)."""
+        self._next = {k: v for k, v in self._next.items() if k in self._backoff}
+        self._wake.set()
+
     def run(self):
         while not self._stop.is_set():
             try:
@@ -76,7 +82,8 @@ class Syncer:
             except Exception as err:   # a background thread must not die silently
                 if self.log:
                     self.log(f"sync: {err}")
-            self._stop.wait(1.0)
+            self._wake.wait(1.0)
+            self._wake.clear()
 
     def start(self) -> "Syncer":
         self._thread = threading.Thread(target=self.run, name="baton-sync", daemon=True)
@@ -85,6 +92,7 @@ class Syncer:
 
     def stop(self):
         self._stop.set()
+        self._wake.set()
         if self._thread:
             self._thread.join(timeout=30)
 

@@ -51,6 +51,7 @@ class Task:
     summary: str = ""
     evidence: dict = field(default_factory=dict)
     subtasks: list[str] = field(default_factory=list)
+    ended: float | None = None   # effective time of its `done`
 
 
 OUTCOMES = ("done", "failed", "escalated")
@@ -380,7 +381,7 @@ class _Folder:
         lease = self.s.leases.get(task.lease) if task.lease else None
         if not lease or not lease.active(t) or lease.actor != e.actor:
             return self.ignore(e, "only the actor holding the task's lease reports it done")
-        task.outcome, task.summary = outcome, str(e.body.get("summary", ""))
+        task.outcome, task.summary, task.ended = outcome, str(e.body.get("summary", "")), t
         evidence = e.body.get("evidence", {})
         task.evidence = dict(evidence) if isinstance(evidence, dict) else {}
         lease.released, lease.expiry = True, t

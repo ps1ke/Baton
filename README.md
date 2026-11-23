@@ -17,6 +17,12 @@ baton is the layer between the agents and the project that stops that:
 - **Peer-to-peer.** Every machine holds the whole log, a folder of content-addressed event files, and computes the
   same state from it. Git carries the log between machines (event files never conflict). Two agents that claim the
   same file at the same moment agree on one winner once their peers have synced.
+- **Talk in the log.** Agents ask whoever posted their task (`baton message "which file?" --wait 15m`), answer each
+  other and humans in task threads; an inbox shows what each actor still has to answer. Messages are events like any
+  other, so they reach every peer and never act on anything.
+- **A swarm that runs itself.** `baton swarm` keeps a machine's agents busy: orchestrators answer questions and
+  re-plan escalated work, workers take tasks, everything syncs in the background, and it stops after a run limit or
+  when the board is empty.
 - **Any agent.** The runner launches whatever command the policy names (Claude Code by default; Codex, Aider or a
   script work the same), at the role's model and effort, keeps its lease alive while it works and records the outcome.
 
@@ -41,6 +47,26 @@ wait; python3 -m baton tasks --all
 That is a real run: two Claude Code workers (Haiku, low effort) fixed one bug each, in parallel, each inside its own
 lease, in under a minute.
 
+Or let a swarm do the scheduling: it answers the workers' questions with the orchestrator, sends escalated tasks back
+to it to re-plan, and takes tasks with the workers until nothing is left:
+
+```sh
+python3 -m baton swarm --seat orch --seat w1 --seat w2 --once          # or --spawn worker=4:orch
+python3 -m baton swarm --seat orch --spawn worker=4:orch --sync 15s     # keep going, sharing with other machines
+```
+
+Defaults are conservative on purpose: 2 task runs at once (`--parallel`), at most 20 agent runs (`--max-runs`, 0 for
+no limit), 2 attempts per task, 30 minutes per run; every run's output is kept under `<home>/runs/`.
+
+Talking:
+
+```sh
+python3 -m baton --actor w1 message "tabs or spaces?" --wait 10m   # in BATON_TASK's thread; prints the answer
+python3 -m baton --actor orch inbox                                # what is waiting for orch's answer
+python3 -m baton --actor orch message "spaces" --reply <id prefix>
+python3 -m baton thread <task id prefix>
+```
+
 Outward actions:
 
 ```sh
@@ -57,14 +83,15 @@ python3 -m baton --actor human:you execute <id prefix> --yes
 python3 -m baton --actor human:you ui        # opens http://127.0.0.1:8765/#token=...
 ```
 
-The task board, the leases held now, the agent tree with each tier's model and effort, an activity feed (with what the
+The task board (each task with its message thread), the leases held now, the agent tree with each tier's model and effort, an activity feed (with what the
 gate refused and why), and the approval queue: read the exact text an agent wants to post, then approve, reject or
-execute it from the browser. It refreshes every two seconds, so it shows synced peers' work too. It listens on
+execute it from the browser; agents' questions to you wait in the same queue with a reply box. It refreshes every two seconds, so it shows synced peers' work too. It listens on
 127.0.0.1 only, every write needs the session token in the printed URL, and without `--actor` (a human from the
 policy) it is read-only.
 
 Sharing between machines: make `$BATON_HOME` a git repository with a common remote (any git remote, including
-another peer over SSH) and run `baton sync` on each machine.
+another peer over SSH) and keep it synced on each machine: `baton sync --every 15s`, `baton ui --sync 15s`, or a
+`baton swarm --sync 15s`. A log you may only read still pulls; an unreachable remote is retried with back-off.
 
 ## Projects, catalogs and joining
 
@@ -106,8 +133,8 @@ Every peer must use the same file. See the defaults written by `baton init`.
 
 ## Status
 
-0.3, standard library only, Python 3.11+. `python3 -m unittest discover -s tests` runs the tests.
+0.4, standard library only, Python 3.11+. `python3 -m unittest discover -s tests` runs the tests.
 
 Not yet safe among people who don't trust each other: events are not signed (protocol version 1), so anyone who can
 write to a shared log can append events as anyone. Also not done: the policy carried in the log, verified-result events,
-and escalation routing. [docs/design.md](docs/design.md) has the model, the threat model and the plan.
+sandboxing the runner, and cost accounting. [docs/design.md](docs/design.md) has the model, the threat model and the plan.

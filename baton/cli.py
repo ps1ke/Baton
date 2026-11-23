@@ -289,6 +289,40 @@ def cmd_thread(a):
     return 0
 
 
+def cmd_swarm(a):
+    from . import swarm
+    store = _store(a)
+    seats = list(a.seat or [])
+    for spec in a.spawn or []:   # role=count[:parent]
+        role, _, rest = spec.partition("=")
+        count, _, parent = rest.partition(":")
+        s = store.state()
+        if role not in store.policy().roles:
+            sys.exit(f"baton: unknown role {role!r}")
+        for i in range(1, int(count or 1) + 1):
+            name = f"{a.prefix}-{role}-{i}"
+            if name not in s.actors:
+                if s.join_mode != "open":
+                    sys.exit(f"baton: this project takes members by application; `baton volunteer` {name} first")
+                e = store.append("join", name, {"role": role, "parent": parent or None})
+                s = store.state()
+                if e.id in s.ignored:
+                    sys.exit(f"baton: {name} could not join: {s.ignored[e.id]}")
+                print(f"{name} joined as {role} under {parent}")
+            seats.append(name)
+    if not seats:
+        sys.exit("baton: name the agents this machine runs with --seat NAME, or --spawn role=count:parent")
+    logs = Path(a.transcripts) if a.transcripts else store.home / "runs"
+    sw = swarm.Swarm(store, seats, parallel=a.parallel, max_runs=a.max_runs, max_attempts=a.max_attempts,
+                     timeout=pol.duration(a.timeout) if a.timeout else None, once=a.once,
+                     interval=pol.duration(a.interval), sync_every=pol.duration(a.sync) if a.sync else None,
+                     transcripts=logs, log=lambda line: print(time.strftime("%H:%M:%S ") + line, flush=True))
+    results = swarm.serve(sw)
+    bad = sum(1 for _, _, o in results if o not in ("done",))
+    print(f"swarm: {len(results)} run(s), {bad} not done; transcripts in {logs}")
+    return 0
+
+
 def cmd_whoami(a):
     s = _store(a).state()
     x = s.actors.get(_actor(a))
@@ -534,6 +568,18 @@ def main(argv=None) -> int:
     p.set_defaults(fn=cmd_execute)
     p = sub.add_parser("status"); p.add_argument("--all", action="store_true"); p.set_defaults(fn=cmd_status)
     sub.add_parser("whoami").set_defaults(fn=cmd_whoami)
+    p = sub.add_parser("swarm", help="keep this machine's agents working: answer, re-plan and take tasks")
+    p.add_argument("--seat", action="append", help="a member this machine runs (repeat)")
+    p.add_argument("--spawn", action="append", help="role=count[:parent]: join and run that many new agents")
+    p.add_argument("--prefix", default="swarm", help="names for --spawn agents: <prefix>-<role>-<n>")
+    p.add_argument("--parallel", type=int, default=2, help="task runs at once (attending does not count)")
+    p.add_argument("--max-runs", type=int, default=20, help="stop after this many agent runs (0: no limit)")
+    p.add_argument("--max-attempts", type=int, default=2, help="runs per task before this swarm gives up on it")
+    p.add_argument("--timeout", default="30m", help="per agent run"); p.add_argument("--interval", default="3s")
+    p.add_argument("--sync", help="sync with the git remote this often, e.g. 15s")
+    p.add_argument("--once", action="store_true", help="stop when nothing is running and nothing is left")
+    p.add_argument("--transcripts", help="where agent output is kept (default: <home>/runs)")
+    p.set_defaults(fn=cmd_swarm)
     p = sub.add_parser("message", help="talk in the log: a task thread, one member, or a reply")
     p.add_argument("text", help='the message, or "-" to read it from stdin')
     p.add_argument("--task", help="the task thread (default inside a run: BATON_TASK)")
