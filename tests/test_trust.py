@@ -61,6 +61,16 @@ class Trust(unittest.TestCase):
         newcomer.write(fake)   # another parentless genesis, sorting first: the recorded project id decides
         self.assertEqual(newcomer.state().project_id, pid)
 
+    def test_an_applicant_can_start_its_machine_and_wait_to_be_admitted(self):
+        from baton.cli import swarm_entry
+        self.s.append("project", "human:ana", {"join": "apply"}, T0 + 3)
+        self.assertEqual(swarm_entry(self.s, "w", True), "run")                 # a member
+        self.assertEqual(swarm_entry(self.s, "m-new", True), "error")           # never applied
+        self.s.append("apply", "m-new", {"offer": offer(SONNET)}, T0 + 4)
+        self.assertEqual(swarm_entry(self.s, "m-new", True), "wait")            # applied: start, sync, wait
+        self.s.append("project", "human:ana", {"join": "open"}, T0 + 5)
+        self.assertEqual(swarm_entry(self.s, "m-other", False), "join")
+
     def test_forged_and_unsigned_events_do_not_count(self):
         other = crypto.Keyring(self.root / "mallory-keys")
         forged = Store(self.s.home, keyring=other).append("approve", "human:ana", {"proposal": "x" * 64}, T0 + 5)

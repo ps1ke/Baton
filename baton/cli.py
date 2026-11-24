@@ -364,6 +364,20 @@ def cmd_run(a):
     return 0 if out in ("done", "checking", "waiting") else 1
 
 
+def swarm_entry(store, me: str, p2p: bool) -> str:
+    """How a swarm starts for `me`: "run" (a member), "wait" (applied, or still looking for the project: keep
+    syncing until admitted), "join" (an open project) or "error"."""
+    s = store.state()
+    if me in s.actors:
+        return "run"
+    applied = any(e.kind == "apply" and e.actor == me for e in store.read()[0].values())
+    if p2p and (not s.project_id or applied):
+        return "wait"
+    if s.join_mode == "open":
+        return "join"
+    return "error"
+
+
 def cmd_swarm(a):
     from . import swarm
     store = _store(a)
@@ -374,11 +388,12 @@ def cmd_swarm(a):
     me = _actor(a)
     s = store.state()
     p = _probe(a)
-    if me not in s.actors and not (a.p2p and not s.project_id):   # applied and waiting to be found: just run
+    entry = swarm_entry(store, me, bool(a.p2p))
+    if entry == "error":
+        sys.exit(f"baton: this project takes members by application: apply with this machine first ({me})")
+    if entry == "join":
         from . import machine as mc
         o = mc.offer(p, cfg, store.policy().presence_ttl)
-        if s.join_mode != "open":
-            sys.exit(f"baton: this project takes members by application: `baton volunteer <project>` as {me} first")
         e = store.append("join", me, {"offer": o})
         if e.id in store.state().ignored:
             sys.exit(f"baton: could not join: {store.state().ignored[e.id]}")
