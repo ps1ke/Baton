@@ -130,7 +130,9 @@ baton --actor human:you approve <push proposal>   # then a steward machine pushe
 Machines learn each other's addresses from the log, so after the first contact every member reaches every other. A
 machine behind a home router needs no setup: it asks the router to forward its port (NAT-PMP or UPnP), and if the
 router will not, it registers with a member that relays, and others reach it through a hole punch or that relay. A
-project whose author makes it *discoverable* can also be found on the BitTorrent DHT by its id, like a magnet link.
+project whose author makes it *discoverable* can also be found by its id, like a magnet link: on the local networks and
+VPNs (ZeroTier, Tailscale) a machine is on, and on the BitTorrent DHT. For the DHT, at least one of the project's
+machines must be reachable from the internet (a router that forwards its port, or a server).
 A git remote still works as a transport (`baton swarm --sync 15s`).
 
 With several machines on one project, each runs its own swarm on its own copy of the log. `baton assign`

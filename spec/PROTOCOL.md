@@ -338,7 +338,8 @@ signature, blobs by hash). baton connects machines directly:
   the issuing node keeps only a hash of each token, with an expiry.
 
 **Reaching nodes behind routers.** A node's offer carries `peer`: `{addr, cert, relay}` when it can be reached
-(`relay: true` if it relays for members), or `{via, cert}` naming the member that relays for it. A node that cannot be
+(`relay: true` if it relays for members), or `{via, cert}` naming the member that relays for it, and in either case
+MAY list `addrs`: its addresses on local networks and VPNs, which members that share such a network try in turn. A node that cannot be
 reached SHOULD first ask its router to forward its port (NAT-PMP, then UPnP IGD), mapping only its own TCP port, for
 a limited lease that it renews and removes on exit. Otherwise it keeps one connection open to a relay
 (`relay-register`, answered by `registered {observed}`). To reach it, a member asks the relay:
@@ -353,6 +354,11 @@ a limited lease that it renews and removes on exit. Otherwise it keeps one conne
 A relay MUST only introduce and bridge members of its project (keys bound, not revoked) and SHOULD limit concurrent
 bridges, their duration and their size. A relay holds the log already, and every event is signed, so it can neither
 learn nor alter anything a member could not.
+
+**Local discovery.** A node of a discoverable project answers on UDP multicast group 239.255.73.42 port 7419, on each
+local network and VPN interface: to `{t: "baton-where", key}` it replies `{t: "baton-here", key, port, cert}`, where
+`key` is the first 32 hex characters of SHA-256(`baton-lan-v3:` + project id); it also sends that reply unasked now
+and then. What is found this way is checked exactly like an address from the DHT.
 
 **Discovery.** A project whose author sets `discoverable: true` may be found on the BitTorrent DHT (BEP 5): its key
 is the first 20 bytes of SHA-256(`baton-v3:` + project id). Reachable nodes announce their peer port under it. An

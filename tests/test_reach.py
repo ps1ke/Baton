@@ -207,6 +207,23 @@ class FakeDHT:
             s.close()
 
 
+class LocalNetworks(unittest.TestCase):
+    def test_a_beacon_answers_only_for_its_project(self):
+        from baton import lan
+        if not lan.interfaces():
+            self.skipTest("no network interface besides loopback")
+        b = lan.Beacon("ab" * 32, 7999, "f" * 64).start()
+        try:
+            time.sleep(0.3)
+            found = lan.find("ab" * 32, wait=2)
+            if not found:
+                self.skipTest("multicast is not delivered on this machine")
+            self.assertTrue(all(a.endswith(":7999") and c == "f" * 64 for a, c in found))
+            self.assertEqual(lan.find("cd" * 32, wait=0.5), [])
+        finally:
+            b.close()
+
+
 class Discovery(unittest.TestCase):
     def test_bencode_round_trips(self):
         x = {b"a": [1, b"two", {b"c": -3}], b"z": b""}

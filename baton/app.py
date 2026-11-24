@@ -123,10 +123,15 @@ def find_by_id(project_id: str) -> list[str]:
 def connect(ws: Workspace, invite: str, note: str = "") -> dict:
     """Use an invite link, or the id of a discoverable open project: fetch its public card and apply (or join)."""
     invite = invite.strip()
-    if re.fullmatch(r"[0-9a-f]{64}", invite):   # no invite: look the project up on the DHT
-        addrs = find_by_id(invite)
+    if re.fullmatch(r"[0-9a-f]{64}", invite):   # no invite: look on the local networks, then on the DHT
+        from . import lan
+        addrs = [a for a, _ in lan.find(invite)]
         if not addrs:
-            raise ValueError("nobody announces that project on the DHT right now (it may not be discoverable)")
+            addrs = find_by_id(invite)
+        if not addrs:
+            raise ValueError("no machine of that project answers on your networks or on the DHT right now. Its "
+                             "stewards must be running baton, and reachable: on your network or VPN, or with a "
+                             "forwarded port. An invite link from them works too.")
         return _connect_unpinned(ws, invite, addrs, note)
     inv = p2p.parse_invite(invite)
     home = ws.dir / "projects" / inv["project"][:16]

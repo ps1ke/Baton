@@ -68,6 +68,7 @@ class Swarm:
         self.p2p = p2p or {}
         self.pushed: set[str] = set()
         self.mapping = None
+        self.peer_port = None
         self.max_runs, self.timeout, self.once, self.interval, self.log, self.now = max_runs, timeout, once, interval, log, now
         self.transcripts = transcripts
         self.running: dict[str, tuple[Job, threading.Thread]] = {}
@@ -92,10 +93,17 @@ class Swarm:
     # -- presence -------------------------------------------------------------------------------------------------
     def offer_body(self) -> dict:
         o = mc.offer(self.probe, self.cfg, self.policy.presence_ttl)
-        if self.node and self.p2p.get("advertise"):   # how other members reach this node
-            o["peer"] = {"addr": self.p2p["advertise"], "cert": self.node.fp, "relay": bool(self.p2p.get("relay", True))}
-        elif self.node and self.node.via:             # or, behind a router, which relay to ask for it
-            o["peer"] = {"via": self.node.via[0], "cert": self.node.fp}
+        if self.node:
+            from . import lan
+            local = [a for a in lan.candidates(self.peer_port) if a != self.p2p.get("advertise")][:8] if self.peer_port else []
+            if self.p2p.get("advertise"):   # how other members reach this node
+                o["peer"] = {"addr": self.p2p["advertise"], "cert": self.node.fp, "relay": bool(self.p2p.get("relay", True))}
+            elif self.node.via:            # or, behind a router, which relay to ask for it
+                o["peer"] = {"via": self.node.via[0], "cert": self.node.fp}
+            else:
+                o["peer"] = {"cert": self.node.fp}
+            if local:                      # and its addresses on local networks and VPNs, for members that share one
+                o["peer"]["addrs"] = local
         return o
 
     # -- being reachable ----------------------------------------------------------------------------------------------
@@ -138,12 +146,23 @@ class Swarm:
             stop.wait(5)
 
     def _dht(self, port: int, stop: threading.Event):
-        """A discoverable project: announce this node on the DHT, and look peers up there when none answer."""
-        from . import dht
+        """A discoverable project: announce this node on the local networks and on the DHT, and look peers up there
+        when none answer."""
+        from . import dht, lan
+        beacon = None
         while not stop.is_set():
             s = self.store.state()
+            if s.project.get("discoverable") and beacon is None:
+                beacon = lan.Beacon(s.project_id, port, self.node.fp).start()
+                self.log("swarm: announcing this project on the local networks and VPNs this machine is on")
+            elif not s.project.get("discoverable") and beacon is not None:
+                beacon.close()
+                beacon = None
             if s.project.get("discoverable"):
                 try:
+                    if not self.p2p.get("advertise"):
+                        self.log("swarm: not announced on the DHT: no address the internet can reach "
+                                 "(forward the port, set this machine's address, or add a reachable member)")
                     found = dht.find(s.project_id, announce_port=port if self.p2p.get("advertise") else None)
                     known = {p.get("addr") for p in self.node.peers().values()}
                     ok = any(v.get("ok") for v in self.node.status.values())
@@ -158,6 +177,8 @@ class Swarm:
                 except OSError as err:
                     self.log(f"swarm: DHT: {err}")
             stop.wait(900)
+        if beacon is not None:
+            beacon.close()
 
     def announce(self, force: bool = False):
         body = self.offer_body()
@@ -334,6 +355,7 @@ class Swarm:
             self.node = p2pmod.Node(self.store, self.me, Path(self.ws.dir) / "tls", log=self.log)
             host, _, port = self.p2p.get("listen", "0.0.0.0:7420").rpartition(":")
             port = self.node.serve(host, int(port))
+            self.peer_port = port
             self.node.addr = self.p2p.get("advertise")
             for addr, fp in self.p2p.get("peers", {}).items():
                 self.node.extra[addr] = fp

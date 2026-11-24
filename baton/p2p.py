@@ -260,6 +260,7 @@ class Node:
         self.via: tuple | None = None              # (relay actor, addr, fp) this node is registered with
         self.observed: str | None = None           # this node's address as its relay sees it
         self.punch_port: int | None = None         # the local port of the registration, reused to punch
+        self.good: dict[str, str] = {}             # peer -> the address that last worked
 
     # -- TLS -----------------------------------------------------------------------------------------------------
     def _server_ctx(self):
@@ -654,7 +655,8 @@ class Node:
                 continue
             if p.get("cert") == self.fp or (p.get("addr") and p.get("addr") == self.addr):
                 continue
-            out[a.name] = {"actor": a.name, "addr": p.get("addr"), "via": p.get("via"), "cert": p["cert"]}
+            addrs = [x for x in (p.get("addrs") or []) if isinstance(x, str)][:8] if isinstance(p.get("addrs"), list) else []
+            out[a.name] = {"actor": a.name, "addr": p.get("addr"), "via": p.get("via"), "cert": p["cert"], "addrs": addrs}
         if self.addr:
             out.pop(f"addr:{self.addr}", None)
         return {k: v for k, v in out.items() if v.get("cert") != self.fp}
@@ -674,8 +676,19 @@ class Node:
         s = self.store.state()
         for name, p in self.peers().items():
             try:
-                if p.get("addr"):
-                    r = self.sync_with(p["addr"], p["cert"])
+                r = None
+                tries = ([self.good[name]] if name in self.good else []) + \
+                    [a for a in [p.get("addr"), *p.get("addrs", [])] if a and a != self.good.get(name)]
+                for i, addr in enumerate(tries):   # its public address first, then its LAN and VPN ones
+                    try:
+                        r = self.sync_with(addr, p["cert"])
+                        self.good[name] = addr
+                        break
+                    except (OSError, ssl.SSLError) as err:
+                        if i == len(tries) - 1 and not p.get("via"):
+                            raise
+                if r is not None:
+                    pass
                 elif p.get("via"):
                     relay = s.actors.get(p["via"])
                     rp = ((relay.offer or {}).get("peer") or {}) if relay else {}
@@ -688,7 +701,7 @@ class Node:
                     r = self.punch(rp["addr"], rp["cert"], name, p["cert"]) or \
                         self.sync_via(rp["addr"], rp["cert"], name, p["cert"])
                 else:
-                    continue
+                    raise ConnectionError("no address of it answers")
                 results[name] = {"ok": True, **r}
                 if r.get("received") or r.get("sent") or r.get("blobs"):
                     how = " (hole punched)" if r.get("punched") else " (relayed)" if r.get("via") else ""
