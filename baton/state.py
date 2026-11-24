@@ -817,7 +817,9 @@ def fold(ordered: list[ev.Event], policy: Policy, genesis_id: str | None = None)
     return _Folder(policy).run(ordered, genesis_id)
 
 
-OPEN_KINDS = ("project", "policy", "grant")   # public, author-signed: admitted even when private parents are unseen
+# Admitted even when some parents are unseen: public, author-signed governance (an applicant sees it without the
+# private events it follows), and applications and joins (their sender may hold events nobody else is given yet).
+OPEN_KINDS = ("project", "policy", "grant", "apply", "join")
 
 
 def causal(events_by_id: dict[str, ev.Event]) -> tuple[list[ev.Event], dict[str, str]]:

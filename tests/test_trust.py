@@ -72,6 +72,15 @@ class Trust(unittest.TestCase):
         self.s.append("project", "human:ana", {"join": "open"}, T0 + 5)
         self.assertEqual(swarm_entry(self.s, "m-other", False), "join")
 
+    def test_an_application_counts_even_if_its_sender_wrote_events_we_were_never_given(self):
+        self.s.append("project", "human:ana", {"join": "apply"}, T0 + 3)
+        other = Store(self.root / "other", keyring=crypto.Keyring(self.root / "ok"))
+        other.merge_from(self.s)
+        other.append("message", "m-late", {"text": "written while I thought I was in"}, T0 + 4)   # never delivered
+        app = other.append("apply", "m-late", {"offer": offer(SONNET)}, T0 + 5)
+        self.s.write(app)
+        self.assertEqual([a.actor for a in self.s.state().applications.values()], ["m-late"])
+
     def test_forged_and_unsigned_events_do_not_count(self):
         other = crypto.Keyring(self.root / "mallory-keys")
         forged = Store(self.s.home, keyring=other).append("approve", "human:ana", {"proposal": "x" * 64}, T0 + 5)
