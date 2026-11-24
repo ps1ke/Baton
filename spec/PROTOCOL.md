@@ -224,7 +224,10 @@ Every package runs in a fresh worktree of the project's repository at its `base`
 children, tests and reviews inherit it), with its inputs applied: an implementer's finished dependencies, the change a
 test or review checks, or every child an integration combines. What the agent changed inside the package's paths
 becomes a **patch**: a blob named by its SHA-256, referenced by the report (`patch`, `base`), carried peer to peer like
-events; changes outside the paths are dropped and listed in `outside`. When a root package is done, a steward proposes
+events; changes outside the paths are dropped and listed in `outside`. A repository that exists only in a folder on the author's machine (`file://`) reaches other machines as a **bundle**:
+the root package's `bundle` names a blob holding a git bundle of its base commit (ref `refs/baton/bundle`), which a
+machine without the folder fetches before checking the base out; a steward on the author's machine pushes results back
+into the folder. When a root package is done, a steward proposes
 `push {branch: "baton/<12 characters of its id>", base, patch, package, title}`; once approved, a level-0 machine
 applies the patch on its base, commits and pushes that branch. Members never need write access to the repository.
 
@@ -317,18 +320,45 @@ signature, blobs by hash). baton connects machines directly:
 - Every machine that takes part runs a **node** listening on TCP, with a self-signed TLS certificate. Other nodes pin
   it by the SHA-256 fingerprint of its DER encoding, learnt from the member's signed offer (`peer: {addr, cert}`), from
   an invite, or given by hand. There is no certificate authority and no server.
+- Before authentication a node SHOULD accept only small messages, finish the handshake within seconds, and limit
+  connections per address and in total.
 - After TLS, the client sends `hello {v: 3, actor, key, nonce, project, token}`; the server answers `challenge
   {nonce}`; the client signs `baton-p2p-v3|` + that nonce + `|` + the server's certificate fingerprint (binding the
   proof to this TLS session) and sends `auth {sig}`; the server signs `baton-p2p-v3|server|` + the client's nonce +
   `|` + the client's key and sends `welcome {access, actor, key, sig}`.
 - **Access**, from the server's own state: a key bound to an actor that is not revoked gets `full` access; the holder
   of a valid invite token, or anyone when the project's join mode is `open`, gets `applicant` access (it sees only
-  `project` and `policy` events, and only its own `apply` or `join` is accepted from it); anyone else is refused.
-- Then each side sends the ids of what it holds (`have {events, blobs}`), and each sends what the other lacks (`data`).
+  `project`, `policy` and `grant` events, and only its own `apply` or `join` is accepted from it); anyone else is refused.
+- Then each side sends the ids of what it holds (`have {events, blobs}`), and each sends the events the other lacks
+  (`data {events, sending, want}`), then each announced blob in its own `blob {id, data}` frame, then `blobs-done`. A
+  receiver accepts only blobs that were announced and match their hash.
   Messages are JSON, each prefixed by its length as 4 bytes, big-endian. Every received event and blob is checked
   before it is written.
 - An invite is `baton://<host:port>/<project id>?cert=<fingerprint>&token=<token>`; only level 0 issues them, and
   the issuing node keeps only a hash of each token, with an expiry.
+
+**Reaching nodes behind routers.** A node's offer carries `peer`: `{addr, cert, relay}` when it can be reached
+(`relay: true` if it relays for members), or `{via, cert}` naming the member that relays for it. A node that cannot be
+reached SHOULD first ask its router to forward its port (NAT-PMP, then UPnP IGD), mapping only its own TCP port, for
+a limited lease that it renews and removes on exit. Otherwise it keeps one connection open to a relay
+(`relay-register`, answered by `registered {observed}`). To reach it, a member asks the relay:
+
+- `punch {to}`: the relay answers `punch-ok {at}` with the target's address as the relay sees it, and tells the
+  target the asker's; both then connect to each other at once from the ports the relay saw (TCP simultaneous open).
+  On the resulting connection, the actor whose name sorts first acts as the TLS server.
+- `relay-connect {to}`: the relay tells the target `dial {session}`, the target opens a second connection and answers
+  `relay-accept {session}`, both receive `relay-ok`, and the relay copies bytes between the two connections. The two
+  ends then authenticate each other as in a direct connection, binding to the target's own certificate.
+
+A relay MUST only introduce and bridge members of its project (keys bound, not revoked) and SHOULD limit concurrent
+bridges, their duration and their size. A relay holds the log already, and every event is signed, so it can neither
+learn nor alter anything a member could not.
+
+**Discovery.** A project whose author sets `discoverable: true` may be found on the BitTorrent DHT (BEP 5): its key
+is the first 20 bytes of SHA-256(`baton-v3:` + project id). Reachable nodes announce their peer port under it. An
+address found there is not trusted: the node MUST prove its key, which MUST be a member's key in the asker's log, or,
+for a newcomer, the genesis signer's or a key the genesis signer granted (`grant` is public). An open discoverable
+project can be joined with its id alone; others still need an invite.
 
 Peers SHOULD exchange with every known node every few seconds while agents work. A git remote (commit, pull, push)
 remains a valid transport for the same files.

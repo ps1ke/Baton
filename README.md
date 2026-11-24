@@ -57,9 +57,11 @@ The installer needs Python 3.11+ and git (Linux or macOS) and installs for your 
 
 1. **Say who you are**, and **set up this machine**: it finds your CPU, memory, GPU and disk, your Claude Code or Codex
    login and plan, and local model servers; you tick the models baton may use and how many packages may run at once.
-2. **Start a project from a repository**: paste its URL. You become the author, and this machine a steward (level 0).
+2. **Start a project from a repository**: paste its URL, or a folder on this machine (other machines then get the code
+   from yours, as a git bundle, and finished work comes back into the folder as `baton/...` branches). You become the author, and this machine a steward (level 0).
    Post the work, make invite links, admit machines, make other machines stewards, approve pushes.
-3. **Or join one**: paste an invite link someone sent you (or open their `…/join.html#baton://…` link). Once
+3. **Or join one**: paste an invite link someone sent you (or open their `…/join.html#baton://…` link), or the id of a
+   project its author made discoverable. Once
    admitted, press **Start this machine** on the project's page, and the network gives it work.
 
 Website: https://ps1ke.github.io/Baton/
@@ -122,7 +124,10 @@ baton --actor human:you admit m-1a2b3c4d
 baton --actor human:you approve <push proposal>   # then a steward machine pushes the branch baton/<package>
 ```
 
-Machines learn each other's addresses from the log, so after the first contact every member reaches every other.
+Machines learn each other's addresses from the log, so after the first contact every member reaches every other. A
+machine behind a home router needs no setup: it asks the router to forward its port (NAT-PMP or UPnP), and if the
+router will not, it registers with a member that relays, and others reach it through a hole punch or that relay. A
+project whose author makes it *discoverable* can also be found on the BitTorrent DHT by its id, like a magnet link.
 A git remote still works as a transport (`baton swarm --sync 15s`).
 
 With several machines on one project, each runs its own swarm on its own copy of the log. `baton assign`

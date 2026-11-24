@@ -67,6 +67,7 @@ class Swarm:
         self.node = None
         self.p2p = p2p or {}
         self.pushed: set[str] = set()
+        self.mapping = None
         self.max_runs, self.timeout, self.once, self.interval, self.log, self.now = max_runs, timeout, once, interval, log, now
         self.transcripts = transcripts
         self.running: dict[str, tuple[Job, threading.Thread]] = {}
@@ -91,9 +92,72 @@ class Swarm:
     # -- presence -------------------------------------------------------------------------------------------------
     def offer_body(self) -> dict:
         o = mc.offer(self.probe, self.cfg, self.policy.presence_ttl)
-        if self.node and self.p2p.get("advertise"):
-            o["peer"] = {"addr": self.p2p["advertise"], "cert": self.node.fp}   # how other members reach this node
+        if self.node and self.p2p.get("advertise"):   # how other members reach this node
+            o["peer"] = {"addr": self.p2p["advertise"], "cert": self.node.fp, "relay": bool(self.p2p.get("relay", True))}
+        elif self.node and self.node.via:             # or, behind a router, which relay to ask for it
+            o["peer"] = {"via": self.node.via[0], "cert": self.node.fp}
         return o
+
+    # -- being reachable ----------------------------------------------------------------------------------------------
+    def reach(self, port: int, stop: threading.Event):
+        """Make this node reachable: the address given, else a port the router opened, else a relay."""
+        from . import nat
+        if not self.p2p.get("advertise") and self.p2p.get("nat", True):
+            m = nat.open_port(port)
+            if m:
+                self.mapping = m
+                self.p2p["advertise"] = m.address
+                self.node.addr = m.address
+                self.log(f"swarm: the router forwards {m.address} to this machine ({m.method}, renewed while running)")
+                threading.Thread(target=self._renew, args=(stop,), daemon=True).start()
+        if self.p2p.get("advertise"):
+            return
+        self.log("swarm: no address others can reach; looking for a member that relays")
+        threading.Thread(target=self._relay_loop, args=(stop,), daemon=True).start()
+
+    def _renew(self, stop: threading.Event):
+        from . import nat
+        while not stop.wait(max(60, self.mapping.lease / 2)):
+            self.mapping = nat.renew(self.mapping) or self.mapping
+
+    def _relay_loop(self, stop: threading.Event):
+        while not stop.is_set():
+            relays = self.node.relays()
+            if relays:
+                actor, addr, fp = relays[0]
+                inner = threading.Event()
+                t = threading.Thread(target=self.node.register, args=(actor, addr, fp, inner), daemon=True)
+                t.start()
+                while not stop.is_set() and t.is_alive():
+                    if self.node.via and (not self.last_offer or self.last_offer[1].get("peer", {}).get("via") != actor):
+                        self.announce(force=True)
+                    if (self.node.relays() or [None])[0] != relays[0]:
+                        break   # a better relay appeared, or this one left
+                    stop.wait(5)
+                inner.set()
+            stop.wait(5)
+
+    def _dht(self, port: int, stop: threading.Event):
+        """A discoverable project: announce this node on the DHT, and look peers up there when none answer."""
+        from . import dht
+        while not stop.is_set():
+            s = self.store.state()
+            if s.project.get("discoverable"):
+                try:
+                    found = dht.find(s.project_id, announce_port=port if self.p2p.get("advertise") else None)
+                    known = {p.get("addr") for p in self.node.peers().values()}
+                    ok = any(v.get("ok") for v in self.node.status.values())
+                    for ip, prt in found[:8]:
+                        addr = f"{ip}:{prt}"
+                        if not ok and addr not in known and addr != self.p2p.get("advertise"):
+                            try:
+                                self.node.sync_with(addr, None)   # unpinned: it must prove it is a member
+                                self.log(f"swarm: found a member at {addr} through the DHT")
+                            except Exception:
+                                pass
+                except OSError as err:
+                    self.log(f"swarm: DHT: {err}")
+            stop.wait(900)
 
     def announce(self, force: bool = False):
         body = self.offer_body()
@@ -188,7 +252,14 @@ class Swarm:
                 run = runner.Run(self.store, self.me, job.task.id, job.pick.model, self.probe, self.cfg,
                                  repo=self.repo, worktrees=self.worktrees)
                 lease_id = run.take()   # here, not in the thread: the next pass must see the lease
-            except (RuntimeError, ValueError, PermissionError) as err:
+                if self.node:   # claim, sync, check: another machine may have claimed it at the same moment
+                    self.node.gossip()
+                    s = self.store.state()
+                    lease = s.leases.get(lease_id)
+                    if lease is None or not lease.active(self.now()) or s.tasks[job.task.id].lease != lease_id:
+                        self.log(f"{self.me}: {job.task.id[:12]} went to another machine first")
+                        return False
+            except (RuntimeError, ValueError, PermissionError, KeyError, LookupError) as err:
                 self.log(f"{self.me}: {err}")
                 return False
             key, target, args = job.task.id, self._work, (job, run, lease_id)
@@ -262,11 +333,15 @@ class Swarm:
             from . import p2p as p2pmod
             self.node = p2pmod.Node(self.store, self.me, Path(self.ws.dir) / "tls", log=self.log)
             host, _, port = self.p2p.get("listen", "0.0.0.0:7420").rpartition(":")
-            self.node.serve(host, int(port))
+            port = self.node.serve(host, int(port))
             self.node.addr = self.p2p.get("advertise")
             for addr, fp in self.p2p.get("peers", {}).items():
                 self.node.extra[addr] = fp
+            self.node.gossip()   # learn the other members (and their relays) before deciding how to be reached
+            self.reach(port, stop_p2p)
             threading.Thread(target=self.node.run, args=(self.p2p.get("every", 5.0), stop_p2p), daemon=True).start()
+            if self.p2p.get("dht", True):
+                threading.Thread(target=self._dht, args=(port, stop_p2p), daemon=True).start()
             self.log(f"swarm: peer node on {self.p2p.get('listen')} (certificate {self.node.fp[:16]}…)")
         if self.syncer:
             self.syncer.tick()
@@ -283,7 +358,11 @@ class Swarm:
         quiet = 0
         try:
             while True:
-                started = self.tick()
+                try:
+                    started = self.tick()
+                except Exception as err:   # the log can change under us while peers sync: try again next pass
+                    self.log(f"swarm: {type(err).__name__}: {err}")
+                    started = 0
                 if self.max_runs and self.runs >= self.max_runs and self.idle():
                     self.log(f"swarm: reached {self.max_runs} runs; stopping")
                     break
@@ -304,6 +383,10 @@ class Swarm:
                 self.node.gossip()
                 stop_p2p.set()
                 self.node.stop()
+            if self.mapping:
+                from . import nat
+                nat.close_port(self.mapping)
+                self.log("swarm: the router no longer forwards the port")
         return self.results
 
     def stop(self):

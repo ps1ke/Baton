@@ -13,6 +13,7 @@ from __future__ import annotations
 import os
 import re
 import secrets
+import socket
 import subprocess
 import sys
 import time
@@ -59,22 +60,32 @@ def port_of(ws: Workspace, project_id: str) -> int:
     entry = d["projects"].get(project_id, {})
     if not entry.get("port"):
         used = {e.get("port") for e in d["projects"].values()}
-        entry["port"] = next(p for p in range(BASE_PORT, BASE_PORT + 1000) if p not in used)
+        entry["port"] = next(p for p in range(BASE_PORT, BASE_PORT + 1000) if p not in used and _free(p))
         d["projects"][project_id] = entry
         ws.save(d)
     return entry["port"]
 
 
+def _free(port: int) -> bool:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        try:
+            s.bind(("0.0.0.0", port))
+            return True
+        except OSError:
+            return False
+
+
 # -- starting and joining --------------------------------------------------------------------------------------------
-def create_project(ws: Workspace, author: str, repo: str, name: str, summary: str = "", join: str = "apply",
+def create_project(ws: Workspace, author: str, repo: str, name: str = "", summary: str = "", join: str = "apply",
                    steward_here: bool = True) -> str:
     """A new project from a repository: the genesis (signed by you), this machine as a steward, the policy."""
     from . import manifest as mf
     if not author:
         raise ValueError("say who you are first")
-    repo, name = repo.strip(), name.strip()
+    repo, name = codeflow.as_repo_url(repo), name.strip()
     if not (mf.git_url_ok(repo) or re.fullmatch(r"https://\S+", repo)):
-        raise ValueError("give the repository's URL, e.g. https://github.com/you/project.git or git@github.com:you/project.git")
+        raise ValueError("give the repository's URL (https://github.com/you/project.git, git@github.com:you/project.git) "
+                         "or a folder on this machine that is a git repository")
     if not name:
         name = re.sub(r"\.git$", "", repo.rstrip("/").rsplit("/", 1)[-1].rsplit(":", 1)[-1]) or "project"
     home = ws.dir / "projects" / f"new-{secrets.token_hex(4)}"
@@ -103,9 +114,21 @@ def create_project(ws: Workspace, author: str, repo: str, name: str, summary: st
     return e.id
 
 
+def find_by_id(project_id: str) -> list[str]:
+    """Addresses announced on the DHT for a discoverable project."""
+    from . import dht
+    return [f"{ip}:{port}" for ip, port in dht.find(project_id)]
+
+
 def connect(ws: Workspace, invite: str, note: str = "") -> dict:
-    """Use an invite link: fetch the project's public card from the inviter and apply (or join) with this machine."""
-    inv = p2p.parse_invite(invite.strip())
+    """Use an invite link, or the id of a discoverable open project: fetch its public card and apply (or join)."""
+    invite = invite.strip()
+    if re.fullmatch(r"[0-9a-f]{64}", invite):   # no invite: look the project up on the DHT
+        addrs = find_by_id(invite)
+        if not addrs:
+            raise ValueError("nobody announces that project on the DHT right now (it may not be discoverable)")
+        return _connect_unpinned(ws, invite, addrs, note)
+    inv = p2p.parse_invite(invite)
     home = ws.dir / "projects" / inv["project"][:16]
     store = Store(home)
     store.init()
@@ -131,6 +154,40 @@ def connect(ws: Workspace, invite: str, note: str = "") -> dict:
     return {"project": s.project_id, "status": "joined" if kind == "join" else "applied", "name": s.project.get("name")}
 
 
+def _connect_unpinned(ws: Workspace, project_id: str, addrs: list[str], note: str) -> dict:
+    home = ws.dir / "projects" / project_id[:16]
+    store = Store(home)
+    store.init()
+    member = ws.machine()["name"]
+    node = p2p.Node(store, member, ws.dir / "tls")
+    last = None
+    for addr in addrs[:8]:
+        try:
+            node.sync_with(addr, None, project=project_id)   # the node must show it is the author or a steward
+            s = store.state()
+            if s.join_mode != "open":
+                raise ValueError("that project takes members by invitation: ask for an invite link")
+            offer = mc.offer(mc.probe([home]), ws.machine(), s.policy.presence_ttl)
+            if not offer["models"]:
+                raise ValueError("this machine offers no model yet: choose some under This machine first")
+            store.append("join", member, {"offer": offer})
+            node.sync_with(addr, None, project=project_id)
+            d = ws.load()
+            d["projects"][project_id] = {**d["projects"].get(project_id, {}), "home": str(home.resolve()), "trusted": False}
+            ws.save(d)
+            port_of(ws, project_id)
+            return {"project": project_id, "status": "joined", "name": s.project.get("name")}
+        except (OSError, ConnectionError, PermissionError) as err:
+            last = err
+    raise ValueError(f"could not reach that project's machines: {last}")
+
+
+def set_discoverable(store: Store, actor: str, on: bool):
+    e = store.append("project", actor, {"discoverable": bool(on)})
+    if e.id in store.state().ignored:
+        raise PermissionError(store.state().ignored[e.id])
+
+
 # -- acting in a project -----------------------------------------------------------------------------------------
 def post_package(ws: Workspace, store: Store, actor: str, req: dict) -> str:
     s = store.state()
@@ -148,7 +205,9 @@ def post_package(ws: Workspace, store: Store, actor: str, req: dict) -> str:
     checks = [c.strip() for c in str(req.get("checks", "")).splitlines() if c.strip()]
     if checks:
         body["acceptance"] = [{"check": f"check{i + 1}", "run": c} for i, c in enumerate(checks)]
-    if s.project_id:
+    if s.project_id and codeflow.local_path(s.project.get("repo")):
+        codeflow.snapshot(ws, store, body)   # a folder on this machine: its history travels as a bundle
+    elif s.project_id:
         try:
             repo = codeflow.checkout(ws, store)
             if repo is not None:

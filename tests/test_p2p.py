@@ -83,8 +83,8 @@ class P2P(unittest.TestCase):
         self.b.append("join", "m-bob", {"offer": {**offer(SONNET), "peer": {"addr": "127.0.0.1:1", "cert": "f" * 64}}}, T0 + 3)
         self.nb.gossip()
         self.assertIn("m-bob", self.a.state().actors)
-        self.assertEqual(self.na.peers(), {"127.0.0.1:1": "f" * 64})          # learned from bob's offer
-        self.assertFalse(self.na.gossip()["127.0.0.1:1"]["ok"])               # nobody there: reported, not fatal
+        self.assertEqual(self.na.peers()["m-bob"]["addr"], "127.0.0.1:1")      # learned from bob's signed offer
+        self.assertFalse(self.na.gossip()["m-bob"]["ok"])                      # nobody there: reported, not fatal
 
 
 if __name__ == "__main__":

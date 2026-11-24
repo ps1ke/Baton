@@ -15,6 +15,7 @@ working directory and nothing depends on a common server:
 from __future__ import annotations
 
 import hashlib
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -37,8 +38,34 @@ def _env():
     return env
 
 
+def local_path(repo: str | None) -> Path | None:
+    """The folder of a `file://` repository, if it exists on this machine."""
+    if repo and repo.startswith("file://"):
+        from urllib.parse import unquote
+        p = Path(unquote(repo[len("file://"):]))
+        return p if (p / ".git").exists() or (p / "HEAD").exists() else None
+    return None
+
+
+def as_repo_url(text: str) -> str:
+    """A repository the user named: a URL as is, or a local folder (which must be a git repository) as file://."""
+    text = text.strip()
+    if re.match(r"^(https?://|ssh://|git@|file://)", text):
+        return text
+    p = Path(text).expanduser().resolve()
+    r = subprocess.run(["git", "-C", str(p), "rev-parse", "--show-toplevel"], capture_output=True, text=True)
+    if r.returncode:
+        raise ValueError(f"{p} is not a git repository (run `git init` there, and commit, first)")
+    top = Path(r.stdout.strip())
+    if subprocess.run(["git", "-C", str(top), "rev-parse", "--verify", "-q", "HEAD"], capture_output=True).returncode:
+        raise ValueError(f"{top} has no commit yet: commit something first")
+    from urllib.parse import quote
+    return "file://" + quote(str(top))   # spaces and the like, percent-encoded
+
+
 def checkout(ws, store: Store) -> Path | None:
-    """This machine's clone of the project's repository (made on first use), or None for a log without a repo."""
+    """This machine's clone of the project's repository (made on first use), or None for a log without a repo.
+    A repository in a folder only the author has starts empty here; its commits arrive as bundles (see prepare)."""
     s = store.state()
     repo = s.project.get("repo") if s.project_id else None
     if not repo:
@@ -46,6 +73,9 @@ def checkout(ws, store: Store) -> Path | None:
     dest = Path(ws.dir) / "checkouts" / s.project_id[:16]
     if not (dest / ".git").exists():
         dest.parent.mkdir(parents=True, exist_ok=True)
+        if repo.startswith("file://") and local_path(repo) is None:
+            git(dest.parent, "init", "-q", str(dest))
+            return dest
         r = subprocess.run(["git", "-c", "protocol.ext.allow=never", "clone", "-q", "--", repo, str(dest)],
                            capture_output=True, text=True, timeout=600)
         if r.returncode:
@@ -62,6 +92,62 @@ def base_of(s, task) -> str | None:
             return t.base
         t = s.tasks.get(t.of) if t.of else s.tasks.get(t.parent) if t.parent else None
     return None
+
+
+def bundle_of(s, task) -> str | None:
+    t = task
+    while t is not None:
+        if t.bundle:
+            return t.bundle
+        t = s.tasks.get(t.of) if t.of else s.tasks.get(t.parent) if t.parent else None
+    return None
+
+
+def make_bundle(repo: Path, base: str) -> bytes:
+    """The history up to `base` as a git bundle, so machines without access to the repository can start from it."""
+    import tempfile
+    ref = "refs/baton/bundle"
+    git(repo, "update-ref", ref, base)
+    with tempfile.TemporaryDirectory() as d:
+        f = Path(d) / "base.bundle"
+        try:
+            git(repo, "bundle", "create", "-q", str(f), ref)
+        finally:
+            git(repo, "update-ref", "-d", ref, check=False)
+        return f.read_bytes()
+
+
+def have_commit(repo: Path, commit: str) -> bool:
+    return git(repo, "cat-file", "-e", commit + "^{commit}", check=False).returncode == 0
+
+
+def fetch_bundle(store: Store, repo: Path, h: str):
+    import tempfile
+    data = store.blob(h)
+    if data is None:
+        raise RuntimeError(f"the repository snapshot {h[:12]} has not arrived yet; sync and try again")
+    with tempfile.TemporaryDirectory() as d:
+        f = Path(d) / "base.bundle"
+        f.write_bytes(data)
+        r = git(repo, "fetch", "-q", str(f), f"refs/baton/bundle:refs/baton/base-{h[:12]}", check=False)
+        if r.returncode:
+            raise RuntimeError(f"the repository snapshot does not load: {r.stderr.decode().strip()[:200]}")
+
+
+def snapshot(ws, store: Store, body: dict, max_bytes: int = 46 * 1024 * 1024):
+    """For a repository in a folder on this machine: pin the root package to the folder's HEAD and attach the
+    history as a bundle, so other machines can work on it."""
+    s = store.state()
+    folder = local_path(s.project.get("repo"))
+    if folder is None or body.get("parent"):
+        return
+    head = git(folder, "rev-parse", "HEAD").stdout.decode().strip()
+    body["base"] = head
+    data = make_bundle(folder, head)
+    if len(data) > max_bytes:
+        raise ValueError(f"the repository is {len(data) // 2**20} MB as a bundle, over the {max_bytes // 2**20} MB "
+                         "a machine sends at once; host it (GitHub or similar) and start the project from its URL")
+    body["bundle"] = store.put_blob(data)
 
 
 def patch_of(task) -> str | None:
@@ -93,6 +179,10 @@ def prepare(store: Store, s, task, repo: Path, where: Path) -> tuple[Path, str]:
     if not base:
         r = git(repo, "rev-parse", "HEAD")
         base = r.stdout.decode().strip()
+    if not have_commit(repo, base):
+        h = bundle_of(s, task)
+        if h:
+            fetch_bundle(store, repo, h)
     if where.exists():
         git(repo, "worktree", "remove", "--force", str(where), check=False)
         shutil.rmtree(where, ignore_errors=True)

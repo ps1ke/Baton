@@ -228,7 +228,7 @@ dialog label { display: grid; gap: 4px; font-size: 12px; color: var(--muted); }
     <section>
       <div class="stepn">Step 3 · a project</div>
       <h3>Start a project from a repository</h3>
-      <label>Repository URL<input id="np-repo" placeholder="https://github.com/you/project.git"></label>
+      <label>Repository URL, or a folder on this machine<input id="np-repo" placeholder="https://github.com/you/project.git  or  ~/code/project"></label>
       <label>Name (optional)<input id="np-name"></label>
       <label>One line about it (optional)<input id="np-sum" maxlength="280"></label>
       <label>Who can join<select id="np-join"><option value="apply">machines apply, you admit them</option><option value="open">any machine may join</option><option value="closed">nobody new</option></select></label>
@@ -239,7 +239,7 @@ dialog label { display: grid; gap: 4px; font-size: 12px; color: var(--muted); }
     <section>
       <div class="stepn">or · help someone</div>
       <h3>Join with an invite</h3>
-      <label>Invite link<input id="cn-link" placeholder="baton://host:port/…?cert=…&token=…"></label>
+      <label>Invite link, or the id of a discoverable project<input id="cn-link" placeholder="baton://host:port/…?cert=…&token=…  or  64-character id"></label>
       <label>Note to the project (optional)<input id="cn-note" maxlength="2000"></label>
       <div class="note">This machine applies with what it offers. Once admitted, start it from the project's page and the network gives it work.</div>
       <div class="btns"><button class="primary" id="cn-go">Join</button></div>
@@ -781,6 +781,12 @@ function toolsBox() {
     }}, "Make an invite link")),
     inviteUrl ? el("div", {class: "invite"}, inviteUrl) : null,
     inviteUrl ? el("div", {class: "note"}, "Or send the web version: https://ps1ke.github.io/Baton/join.html#" + encodeURIComponent(inviteUrl)) : null,
+    s.me_author ? el("h3", {style: "margin:16px 0 6px;font-size:14px"}, "Discoverable") : null,
+    s.me_author ? el("div", {class: "note"}, (s.manifest && s.manifest.discoverable)
+      ? "On: running machines announce this project on the BitTorrent DHT, so anyone with its id can find them (and their IP addresses). Id: " + (s.manifest.id || "")
+      : "Off: machines find each other through invites and the log only. Turning it on lets anyone who knows the project's id find its machines, like a magnet link, which also shows them your IP address.") : null,
+    s.me_author ? el("div", {class: "btns", style: "margin-top:6px"}, el("button", {onclick: () => act("/api/p/" + key + "/discoverable",
+      {on: !(s.manifest && s.manifest.discoverable)}, err)}, (s.manifest && s.manifest.discoverable) ? "Turn off" : "Make discoverable")) : null,
     s.me_author && members.length ? el("h3", {style: "margin:16px 0 6px;font-size:14px"}, "Machines") : null,
     s.me_author ? members.map(m => el("div", {class: "row", style: "padding:3px 0"}, el("span", {class: "mono"}, m.name),
       m.right === "steward" ? pill("done", "level 0") : null, m.revoked ? pill("failed", "removed") : null,

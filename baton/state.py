@@ -63,6 +63,7 @@ class Task:
     depends_on: tuple[str, ...] = ()
     of: str | None = None              # a test or review: the implement package it checks
     base: str | None = None            # the repository commit the package starts from (children inherit it)
+    bundle: str | None = None          # a blob: the base commit as a git bundle, for repositories only the author has
     lease: str | None = None           # the lease that holds it now (or last held it)
     outcome: str | None = None         # done failed escalated
     summary: str = ""
@@ -545,7 +546,7 @@ class _Folder:
                     topics=_str_list(b.get("topics")), acceptance=list(b.get("acceptance") or []),
                     deliverables=list(b.get("deliverables") or []), constraints=list(b.get("constraints") or []),
                     inputs=list(b.get("inputs") or []), size=b.get("size"), tier=tier,
-                    hardware=_str_list((b.get("needs") or {}).get("hardware")), depends_on=deps, base=b.get("base"))
+                    hardware=_str_list((b.get("needs") or {}).get("hardware")), depends_on=deps, base=b.get("base"), bundle=b.get("bundle"))
         self.s.tasks[e.id] = task
         if parent:
             parent.subtasks.append(e.id)

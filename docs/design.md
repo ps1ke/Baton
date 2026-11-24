@@ -103,6 +103,14 @@ bound to the TLS certificate, then exchanges what each side lacks. Access follow
 patches, an invite holder only the project's public card plus the right to deliver its application, strangers
 nothing. There is no server and no certificate authority; a git remote can still carry the same files.
 
+Home routers are the usual obstacle, so a node tries, in order: an address the user gave; asking the router to
+forward its port (NAT-PMP, then UPnP, for its own port only, with a lease it renews and removes); and otherwise one
+outgoing connection to a member that relays. Through that relay others first try a hole punch (both sides connect at
+once from the ports the relay saw) and fall back to a bridge. Relays only connect members to members, who already
+hold the same signed log, so relaying costs bandwidth, not trust. Discovery on the BitTorrent DHT is opt-in per
+project, because announcing tells anyone with the project's id which addresses take part; and an address found there
+must still prove a member's key (or, for a newcomer, a key the author signed for) before anything it sends is kept.
+
 ### Code as patches
 
 Each package runs in its own worktree at the package's base commit, with its inputs applied from patches: the change a
@@ -195,11 +203,12 @@ author. `baton execute` runs an approved proposal through the forge adapter (dry
   events will at least bind each offer to a key.
 - **The policy.** The author publishes it into the log (`baton policy`), so peers fold with the same one; a log whose
   author never published one falls back to each peer's local file.
-- **Reachability.** Nodes need an address others can reach; there is no NAT traversal or relay yet.
+- **Reachability.** Port mapping, hole punching and relays cover most home networks; two machines that can neither
+  be reached nor reach a relay still cannot meet.
 
 ## Next
 
-1. ~~Signed events and a policy carried in the log~~: done in 0.6. Next: NAT traversal and relays for nodes.
+1. ~~Signed events and a policy carried in the log~~: done in 0.6. NAT traversal, relays and DHT discovery: done in 0.8.
 2. Sandboxing for the runner: an agent sees only its lease's paths, and holds no forge credentials.
 3. Verified results as first-class events (`verdict {pr, commit, command, exit, output_digest, baseline}`), so a
    review that says "tests pass" names the exact commit and command, and a claim about another PR is checked

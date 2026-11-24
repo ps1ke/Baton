@@ -14,7 +14,8 @@ CATALOG = "1"
 JOIN_MODES = ("open", "apply", "closed")
 RELS = ("depends-on", "dependency-of", "related", "fork-of", "upstream", "downstream", "successor", "predecessor")
 # Fields a `project` event may set; the manifest adds id, humans, updated and activity.
-FIELDS = ("name", "summary", "description", "homepage", "repo", "log", "inbox", "tags", "needs", "join", "links")
+FIELDS = ("name", "summary", "description", "homepage", "repo", "log", "inbox", "tags", "needs", "join", "links",
+          "discoverable")
 
 _ID = re.compile(r"[0-9a-f]{64}")
 _TAG = re.compile(r"[a-z0-9][a-z0-9+.-]{0,39}")
@@ -98,6 +99,8 @@ def check_fields(d: dict) -> list[str]:
                     errors.append(f"needs[{i}].count must be an integer 0..10000")
                 if "note" in n:
                     _str(errors, f"needs[{i}].note", n["note"], 500)
+    if d.get("discoverable") is not None and not isinstance(d.get("discoverable"), bool):
+        errors.append("discoverable must be true or false")
     if d.get("join") is not None and d.get("join") not in JOIN_MODES:
         errors.append(f"join must be one of {', '.join(JOIN_MODES)}")
     links = d.get("links")

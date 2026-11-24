@@ -102,7 +102,8 @@ class App(unittest.TestCase):
         url = self.call("POST", f"/api/p/{pid}/invite", {})[1]["url"]
         inv = p2p.parse_invite(url)
         # the author's node (normally the running swarm) answers on the project's port
-        store = Store(self.ws.projects()[pid]["home"])
+        from baton import crypto as _c
+        store = Store(self.ws.projects()[pid]["home"], keyring=_c.default_keyring())   # this machine's keys, fixed now
         node = p2p.Node(store, "m-author", self.ws.dir / "tls")
         node.serve("127.0.0.1", int(inv["addr"].rsplit(":", 1)[1]))
         try:

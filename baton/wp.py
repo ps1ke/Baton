@@ -64,7 +64,7 @@ def check_package(b: dict) -> list[str]:
     if not isinstance(b, dict):
         return ["a work package must be an object"]
     known = {"title", "kind", "goal", "context", "detail", "paths", "topics", "acceptance", "deliverables",
-             "constraints", "size", "needs", "parent", "depends_on", "inputs", "base"}
+             "constraints", "size", "needs", "parent", "depends_on", "inputs", "base", "bundle"}
     extra = set(b) - known
     if extra:
         errors.append(f"unknown work package fields: {', '.join(sorted(extra))}")
@@ -102,6 +102,8 @@ def check_package(b: dict) -> list[str]:
             _list(errors, "needs.hardware", needs.get("hardware"), 10, 40)
     if b.get("base") is not None and not (isinstance(b["base"], str) and re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", b["base"])):
         errors.append("base must be a full commit id")
+    if b.get("bundle") is not None and not (isinstance(b["bundle"], str) and _ID.fullmatch(b["bundle"])):
+        errors.append("bundle must be the SHA-256 of a blob (a git bundle of the base commit)")
     if b.get("parent") is not None and not (isinstance(b["parent"], str) and _ID.fullmatch(b["parent"])):
         errors.append("parent must be a package id")
     deps = b.get("depends_on")

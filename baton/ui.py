@@ -336,7 +336,7 @@ def make_server(ws: Workspace, actor: str | None, host: str = "127.0.0.1", port:
     cookie = hmac.new(token.encode(), b"baton-session", hashlib.sha256).hexdigest()
     directory = Directory(ws, extra_home)
     runs = app.Runs(ws)
-    route = re.compile(r"^/api/p/([\w-]{1,80})/(state|decide|link|message|task|invite|grant|revoke|run)$")
+    route = re.compile(r"^/api/p/([\w-]{1,80})/(state|decide|link|message|task|invite|grant|revoke|run|discoverable)$")
     fixed_actor = actor
 
     def who():
@@ -510,6 +510,9 @@ def make_server(ws: Workspace, actor: str | None, host: str = "127.0.0.1", port:
                     out = {"ok": True}
                 elif op == "revoke":
                     app.revoke(store, actor, str(req["actor"]))
+                    out = {"ok": True}
+                elif op == "discoverable":
+                    app.set_discoverable(store, actor, bool(req.get("on")))
                     out = {"ok": True}
                 else:
                     out = {"decide": decide, "link": add_link, "message": say}[op](store, actor, req)
