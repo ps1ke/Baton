@@ -101,6 +101,7 @@ def create_project(ws: Workspace, author: str, repo: str, name: str = "", summar
     final = ws.dir / "projects" / e.id[:16]
     home.rename(final)
     store = Store(final)
+    store.set_project(e.id)
     ws.add_project(e.id, final, trusted=True)
     store.append("policy", author, {"toml": pol.DEFAULT.lstrip()})
     if steward_here:
@@ -138,6 +139,7 @@ def connect(ws: Workspace, invite: str, note: str = "") -> dict:
     home = ws.dir / "projects" / inv["project"][:16]
     store = Store(home)
     store.init()
+    store.set_project(inv["project"])
     member = ws.machine()["name"]
     node = p2p.Node(store, member, ws.dir / "tls")
     r = node.sync_with(inv["addr"], inv["cert"], token=inv["token"], project=inv["project"])
@@ -164,6 +166,7 @@ def _connect_unpinned(ws: Workspace, project_id: str, addrs: list[str], note: st
     home = ws.dir / "projects" / project_id[:16]
     store = Store(home)
     store.init()
+    store.set_project(project_id)
     member = ws.machine()["name"]
     node = p2p.Node(store, member, ws.dir / "tls")
     last = None
@@ -176,8 +179,11 @@ def _connect_unpinned(ws: Workspace, project_id: str, addrs: list[str], note: st
             offer = mc.offer(mc.probe([home]), ws.machine(), s.policy.presence_ttl)
             if not offer["models"]:
                 raise ValueError("this machine offers no model yet: choose some under This machine first")
+            if member in s.actors:
+                return {"project": project_id, "status": "member", "name": s.project.get("name")}
             kind = "join" if s.join_mode == "open" else "apply"
-            store.append(kind, member, {"offer": offer, **({"note": note[:2000]} if note and kind == "apply" else {})})
+            if not any(x.status == "pending" and x.actor == member for x in s.applications.values()):
+                store.append(kind, member, {"offer": offer, **({"note": note[:2000]} if note and kind == "apply" else {})})
             node.sync_with(addr, first["cert"], project=project_id)   # now pinned: the same node as before
             d = ws.load()
             d["projects"][project_id] = {**d["projects"].get(project_id, {}), "home": str(home.resolve()),
@@ -197,6 +203,7 @@ def _wait_to_be_found(ws: Workspace, project_id: str, note: str) -> dict:
     home = ws.dir / "projects" / project_id[:16]
     store = Store(home)
     store.init()
+    store.set_project(project_id)
     member = ws.machine()["name"]
     offer = mc.offer(mc.probe([home]), ws.machine(), 180.0)
     if not offer["models"]:

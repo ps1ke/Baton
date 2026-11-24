@@ -44,6 +44,23 @@ class Trust(unittest.TestCase):
         e = bare.append("project", "human:x", {"name": "no repo"}, T0)
         self.assertIn("starts from a repository", bare.state().ignored[e.id])
 
+    def test_an_applicant_sees_the_project_and_its_rules_without_the_private_events(self):
+        self.s.append("task", "human:ana", {"title": "private work"}, T0 + 3)
+        self.s.append("project", "human:ana", {"join": "apply", "discoverable": True}, T0 + 4)   # parents: private
+        pid = self.s.state().project_id
+        newcomer = Store(self.root / "new", keyring=crypto.Keyring(self.root / "nk"))
+        newcomer.append("apply", "m-new", {"offer": offer(SONNET)}, T0 - 100)   # sorts before the genesis
+        for e in self.s.read()[0].values():
+            if e.kind in ("project", "policy", "grant"):
+                newcomer.write(e)
+        newcomer.set_project(pid)
+        st = newcomer.state()
+        self.assertEqual((st.project_id, st.join_mode, st.project.get("discoverable")), (pid, "apply", True))
+        decoy = Store(self.root / "decoy", keyring=crypto.Keyring(self.root / "dk"))
+        fake = decoy.append("project", "human:eve", {"name": "importer", "repo": REPO}, T0 - 500)
+        newcomer.write(fake)   # another parentless genesis, sorting first: the recorded project id decides
+        self.assertEqual(newcomer.state().project_id, pid)
+
     def test_forged_and_unsigned_events_do_not_count(self):
         other = crypto.Keyring(self.root / "mallory-keys")
         forged = Store(self.s.home, keyring=other).append("approve", "human:ana", {"proposal": "x" * 64}, T0 + 5)

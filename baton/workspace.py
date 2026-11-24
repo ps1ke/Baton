@@ -157,6 +157,7 @@ class Workspace:
         if r.returncode:
             raise RuntimeError(r.stderr.strip() or "git clone failed")
         store = Store(dest)
+        store.set_project(m["id"])
         got = store.state().project_id
         if got != m["id"]:
             raise ValueError(f"the log at {url} is project {str(got)[:12]}, not {m['id'][:12]}: not adding it")

@@ -319,6 +319,7 @@ class _Folder:
         self.p = policy
         self.s = State(policy=policy)
         self.eff: dict[str, float] = {}
+        self.genesis = None
 
     def ignore(self, e: ev.Event, why: str):
         self.s.ignored[e.id] = why
@@ -343,8 +344,14 @@ class _Folder:
             return f"{e.kind} is a level-0 decision (author and stewards)"
         return None
 
-    def run(self, ordered: list[ev.Event]) -> State:
-        genesis = ordered[0] if ordered and ordered[0].kind == "project" and ordered[0].body.get("name") else None
+    def run(self, ordered: list[ev.Event], genesis_id: str | None = None) -> State:
+        """`genesis_id`: the project this log belongs to, when known; otherwise the first project event that has a
+        name and no parents. Never simply the first event: an applicant's own `apply` can sort before it."""
+        if genesis_id:
+            genesis = next((e for e in ordered if e.id == genesis_id and e.kind == "project"), None)
+        else:
+            genesis = next((e for e in ordered if e.kind == "project" and e.body.get("name") and not e.parents), None)
+        self.genesis = genesis
         if genesis is None:   # a private log: the local policy names its humans
             for h in sorted(self.p.humans):
                 self.s.actors[h] = Actor(h, "human", right="human")
@@ -454,6 +461,8 @@ class _Folder:
         if errors:
             return self.ignore(e, "; ".join(errors))
         if self.s.project_id is None:
+            if self.genesis is not None and e is not self.genesis:
+                return self.ignore(e, "this log belongs to another project (or its genesis is not here yet)")
             if not fields.get("name"):
                 return self.ignore(e, "the first project event (the genesis) needs a name")
             if not fields.get("repo") or not mf.git_url_ok(fields["repo"]) and not str(fields["repo"]).startswith("https://"):
@@ -804,8 +813,11 @@ class _Folder:
         pr.status, pr.result = "executed", dict(e.body.get("result", {}))
 
 
-def fold(ordered: list[ev.Event], policy: Policy) -> State:
-    return _Folder(policy).run(ordered)
+def fold(ordered: list[ev.Event], policy: Policy, genesis_id: str | None = None) -> State:
+    return _Folder(policy).run(ordered, genesis_id)
+
+
+OPEN_KINDS = ("project", "policy", "grant")   # public, author-signed: admitted even when private parents are unseen
 
 
 def causal(events_by_id: dict[str, ev.Event]) -> tuple[list[ev.Event], dict[str, str]]:
@@ -815,18 +827,19 @@ def causal(events_by_id: dict[str, ev.Event]) -> tuple[list[ev.Event], dict[str,
     held: dict[str, str] = {}
     for e in events_by_id.values():
         absent = [p for p in e.parents if p not in events_by_id]
-        if absent:
+        if absent and e.kind not in OPEN_KINDS:
             held[e.id] = f"waiting for parent {absent[0][:12]}"
             continue
-        missing[e.id] = len(e.parents)
-        for p in e.parents:
+        present = [p for p in e.parents if p in events_by_id]   # an applicant sees public events without their
+        missing[e.id] = len(present)                            # private parents; those count all the same
+        for p in present:
             children.setdefault(p, []).append(e.id)
     ready = deque(i for i, n in missing.items() if n == 0)
     admitted: dict[str, ev.Event] = {}
     while ready:
         i = ready.popleft()
         e = events_by_id[i]
-        if any(events_by_id[p].lamport >= e.lamport for p in e.parents):
+        if any(events_by_id[p].lamport >= e.lamport for p in e.parents if p in events_by_id):
             held[i] = "lamport clock not above its parents'"
             continue
         admitted[i] = e

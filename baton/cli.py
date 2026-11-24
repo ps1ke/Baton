@@ -783,6 +783,7 @@ def cmd_project(a):
         code = _emit(a, "project", _project_fields(a))
         s = store.state()
         if code == 0 and a.action == "create":
+            store.set_project(s.project_id)
             _ws().add_project(s.project_id, store.home, trusted=True)
             print(f"project {s.project_id} created and added to your workspace")
         return code

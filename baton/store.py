@@ -70,7 +70,19 @@ class Store:
 
     def state(self) -> st.State:
         ordered, _, _ = self.load()
-        return st.fold(ordered, self.policy())
+        return st.fold(ordered, self.policy(), self.project_hint())
+
+    def project_hint(self) -> str | None:
+        """The project this log belongs to, if this machine recorded it (created, joined, or applied to)."""
+        try:
+            v = (self.home / "project-id").read_text().strip()
+            return v if len(v) == 64 else None
+        except OSError:
+            return None
+
+    def set_project(self, project_id: str):
+        self.home.mkdir(parents=True, exist_ok=True)
+        (self.home / "project-id").write_text(project_id + "\n")
 
     # -- blobs: content-addressed files (patches) that events refer to by SHA-256 ------------------------------------
     def put_blob(self, data: bytes) -> str:
