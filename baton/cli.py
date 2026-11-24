@@ -370,11 +370,14 @@ def swarm_entry(store, me: str, p2p: bool) -> str:
     s = store.state()
     if me in s.actors:
         return "run"
-    applied = any(e.kind == "apply" and e.actor == me for e in store.read()[0].values())
+    applied = any(e.kind == "apply" and e.actor == me for e in store.read()[0].values()
+                  if not any(a.actor == me and a.status == "declined" for a in s.applications.values()))
     if p2p and (not s.project_id or applied):
         return "wait"
     if s.join_mode == "open":
         return "join"
+    if p2p and s.join_mode == "apply":
+        return "apply"   # starting a machine for a project is asking to help it: apply, then wait to be admitted
     return "error"
 
 
@@ -390,7 +393,16 @@ def cmd_swarm(a):
     p = _probe(a)
     entry = swarm_entry(store, me, bool(a.p2p))
     if entry == "error":
-        sys.exit(f"baton: this project takes members by application: apply with this machine first ({me})")
+        sys.exit(f"baton: this project takes no new members right now ({me} is not one)")
+    if entry == "apply":
+        from . import machine as mc
+        o = mc.offer(p, cfg, store.policy().presence_ttl)
+        if not o["models"]:
+            sys.exit("baton: this machine offers no model yet: choose some under This machine")
+        e = store.append("apply", me, {"offer": o, "note": "started from the app"})
+        if e.id in store.state().ignored:
+            sys.exit(f"baton: could not apply: {store.state().ignored[e.id]}")
+        print(f"{me} applied; it starts work once a steward admits it", flush=True)
     if entry == "join":
         from . import machine as mc
         o = mc.offer(p, cfg, store.policy().presence_ttl)

@@ -65,7 +65,8 @@ class Trust(unittest.TestCase):
         from baton.cli import swarm_entry
         self.s.append("project", "human:ana", {"join": "apply"}, T0 + 3)
         self.assertEqual(swarm_entry(self.s, "w", True), "run")                 # a member
-        self.assertEqual(swarm_entry(self.s, "m-new", True), "error")           # never applied
+        self.assertEqual(swarm_entry(self.s, "m-new", True), "apply")           # never applied: Start applies
+        self.assertEqual(swarm_entry(self.s, "m-new", False), "error")          # (without a peer node, it cannot wait)
         self.s.append("apply", "m-new", {"offer": offer(SONNET)}, T0 + 4)
         self.assertEqual(swarm_entry(self.s, "m-new", True), "wait")            # applied: start, sync, wait
         self.s.append("project", "human:ana", {"join": "open"}, T0 + 5)
