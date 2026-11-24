@@ -459,6 +459,23 @@ def make_server(ws: Workspace, actor: str | None, host: str = "127.0.0.1", port:
                         d["auto_update"] = bool(req.pop("auto_update"))
                         ws.save(d)
                     return self._json(200, set_machine(ws, req) if req else machine_view(ws))
+                if path == "/api/update":
+                    from . import update
+                    if req.get("action") == "install":
+                        if not update.installed():
+                            raise ValueError("this baton runs from a development checkout: update it with git pull")
+                        c = update.check()
+                        if not c["available"]:
+                            return self._json(200, {**c, "installed": False})
+                        version = update.apply(c["latest"])
+                        update.remember(ws, updated_to=version, commit=c["latest"], error=None, restart=True)
+                        if getattr(srv, "on_updated", None):
+                            threading.Thread(target=srv.on_updated, daemon=True).start()
+                        return self._json(200, {**c, "installed": True, "version": version,
+                                                "restarting": not any(runs.running(p) for p in list(runs.procs))})
+                    c = update.check()
+                    update.remember(ws, checked=True, latest=c["latest"], error=None)
+                    return self._json(200, {**c, "can_install": update.installed()})
                 if path == "/api/me":
                     return self._json(200, {"me": app.set_me(ws, str(req.get("name", "")))})
                 if path == "/api/connect":
@@ -531,6 +548,7 @@ def make_server(ws: Workspace, actor: str | None, host: str = "127.0.0.1", port:
     srv.daemon_threads = True
     srv.directory = directory
     srv.runs = runs
+    srv.on_updated = None   # set by serve(): restart into the new version
     return srv, token
 
 
@@ -559,14 +577,19 @@ def serve(ws: Workspace, actor: str | None, port: int = 8765, open_browser: bool
         threading.Timer(0.3, lambda: webbrowser.open(url)).start()
     restart = threading.Event()
 
+    def restart_when_idle():
+        while any(srv.runs.running(pid) for pid in list(srv.runs.procs)):
+            time.sleep(30)   # machines are working: restart once they stop
+        restart.set()
+        srv.shutdown()
+
+    srv.on_updated = restart_when_idle
+
     def updater():
         from . import update
-        while True:
+        while not restart.is_set():
             if update.auto(ws, log=lambda line: print(time.strftime("%H:%M:%S ") + line, flush=True)):
-                while any(srv.runs.running(pid) for pid in list(srv.runs.procs)):
-                    time.sleep(30)   # machines are working: restart once they stop
-                restart.set()
-                srv.shutdown()
+                restart_when_idle()
                 return
             time.sleep(update.EVERY)
 

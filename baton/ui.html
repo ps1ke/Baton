@@ -200,6 +200,11 @@ dialog label { display: grid; gap: 4px; font-size: 12px; color: var(--muted); }
           <button id="m-probe">Detect again</button><button id="m-limits">Read usage limits</button></div>
         <div id="m-msg"></div>
       </section>
+      <section><h2>Updates</h2>
+        <div class="row"><span id="up-ver" class="note"></span>
+          <span style="margin-left:auto"></span><button id="up-check">Check for updates</button><button class="primary" id="up-install" hidden>Install now</button></div>
+        <div id="up-msg" class="note" style="margin-top:6px"></div>
+      </section>
       <section><h2>The offer projects see</h2><pre class="mono" id="m-offer" style="white-space:pre-wrap; margin:0"></pre></section>
     </div>
     <div class="stack">
@@ -448,6 +453,7 @@ function renderMachine() {
   $("m-slots").value = cfg.slots ?? ""; $("m-slots").placeholder = m.suggested_slots + " suggested";
   $("m-share").checked = cfg.share_hardware !== false;
   if (appInfo && document.activeElement !== $("m-addr")) $("m-addr").value = appInfo.address || "";
+  showVersion();
   if (appInfo && appInfo.update) { $("m-update").checked = appInfo.update.enabled; $("m-update").disabled = !appInfo.update.installed;
     $("m-update").parentElement.title = appInfo.update.installed ? "" : "a development checkout updates with git"; }
   $("m-models").replaceChildren(...m.models.map(x => el("tr", {},
@@ -475,6 +481,34 @@ $("m-save").addEventListener("click", async () => {
   } catch (e) { msg.replaceChildren(el("div", {class: "err"}, e.message)); }
 });
 $("m-probe").addEventListener("click", () => loadMachine("fresh"));
+function showVersion() {
+  const a = appInfo || {}, u = a.update || {};
+  $("up-ver").textContent = "baton " + (a.version || "?") + (u.commit ? " · " + u.commit.slice(0, 7) : "") +
+    (u.installed ? (u.enabled ? " · updates itself" : " · automatic updates off") : " · development checkout");
+}
+$("up-check").addEventListener("click", async () => {
+  const msg = $("up-msg"); msg.textContent = "Asking GitHub…"; $("up-install").hidden = true;
+  try {
+    const c = await post("/api/update", {action: "check"});
+    if (!c.available) msg.textContent = "Up to date.";
+    else if (!c.can_install) msg.textContent = "A newer commit (" + c.latest.slice(0, 7) + ") is on GitHub; this development checkout updates with git pull.";
+    else { msg.textContent = "A newer version is on GitHub (" + c.latest.slice(0, 7) + ")."; $("up-install").hidden = false; }
+  } catch (e) { msg.replaceChildren(el("span", {class: "err"}, e.message)); }
+});
+$("up-install").addEventListener("click", async () => {
+  const msg = $("up-msg"); msg.textContent = "Downloading and checking the new version…"; $("up-install").disabled = true;
+  try {
+    const r = await post("/api/update", {action: "install"});
+    if (!r.installed) { msg.textContent = "Already up to date."; }
+    else if (r.restarting) {
+      msg.textContent = "Installed baton " + r.version + ". Restarting…";
+      setTimeout(function wait() { fetch("/api/app", {cache: "no-store"}).then(x => x.json()).then(a => {
+        if (a.version === r.version) { appInfo = a; showVersion(); msg.textContent = "Now running baton " + r.version + "."; }
+        else setTimeout(wait, 1000); }).catch(() => setTimeout(wait, 1000)); }, 1500);
+    } else msg.textContent = "Installed baton " + r.version + ". It restarts into it once this machine has no work running.";
+  } catch (e) { msg.replaceChildren(el("span", {class: "err"}, e.message)); }
+  $("up-install").disabled = false; $("up-install").hidden = true;
+});
 $("m-limits").addEventListener("click", () => loadMachine("limits"));
 
 // ---- directory ----------------------------------------------------------------------------------------------------

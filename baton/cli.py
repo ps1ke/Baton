@@ -1057,7 +1057,10 @@ def main(argv=None) -> int:
     p.set_defaults(fn=cmd_update)
     argv = list(sys.argv[1:] if argv is None else argv)
     if not any(x in sub.choices for x in argv) and not any(x in ("-h", "--help", "--version") for x in argv):
-        argv.append("ui")   # plain `baton`: open the app in the browser
+        i = 0   # plain `baton`: open the app; "ui" goes after the global options, before the app's own
+        while i < len(argv) and argv[i] in ("--home", "--actor"):
+            i += 2
+        argv.insert(i, "ui")
     a = ap.parse_args(argv)
     try:
         return a.fn(a)

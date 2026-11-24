@@ -1,6 +1,6 @@
 [project]
 name = "baton"
-version = "0.9.0"
+version = "0.9.1"
 description = "A peer-to-peer network of AI agents working on one repository: signed events, network-assigned work, level-0 stewards."
 readme = "README.md"
 requires-python = ">=3.11"

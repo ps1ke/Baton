@@ -90,6 +90,18 @@ class App(unittest.TestCase):
         self.assertTrue(snap["me_author"])
         self.assertEqual(snap["run"]["running"], False)
 
+    def test_the_update_button_checks_github_and_refuses_to_install_into_a_checkout(self):
+        self.cookie = self.call("POST", "/api/session", headers={"X-Baton-Token": "t0k3n"})[2].split(";")[0]
+        from baton import update
+        with mock.patch.object(update, "latest", lambda branch="main": "f" * 40):
+            status, d, _ = self.call("POST", "/api/update", {"action": "check"})
+            self.assertEqual((status, d["available"], d["can_install"]), (200, True, False))
+            status, d, _ = self.call("POST", "/api/update", {"action": "install"})
+            self.assertEqual(status, 400)
+            self.assertIn("development checkout", d["error"])
+        self.cookie = None
+        self.assertEqual(self.call("POST", "/api/update", {"action": "check"})[0], 403)   # needs the session
+
     def test_an_invite_link_brings_a_second_machine_in(self):
         self.cookie = self.call("POST", "/api/session", headers={"X-Baton-Token": "t0k3n"})[2].split(";")[0]
         self.call("POST", "/api/me", {"name": "ana"})
