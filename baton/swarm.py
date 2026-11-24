@@ -196,9 +196,10 @@ class Swarm:
                 beacon = None
             if s.project.get("discoverable"):
                 try:
-                    if not self.p2p.get("advertise"):
-                        self.log("swarm: not announced on the DHT: no address the internet can reach "
-                                 "(forward the port, set this machine's address, or add a reachable member)")
+                    if not self.p2p.get("advertise") and not getattr(self, "_said_udp_only", False):
+                        self._said_udp_only = True
+                        self.log("swarm: the router forwards no port, so other machines reach this one by UDP hole "
+                                 "punching (announced on the DHT), like torrent clients do")
                     found = dht.find(s.project_id, announce_port=port if self.p2p.get("advertise") else None)
                     known = {p.get("addr") for p in self.node.peers().values()}
                     for ip, prt in found[:16]:
