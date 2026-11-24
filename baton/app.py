@@ -163,20 +163,22 @@ def _connect_unpinned(ws: Workspace, project_id: str, addrs: list[str], note: st
     last = None
     for addr in addrs[:8]:
         try:
-            node.sync_with(addr, None, project=project_id)   # the node must show it is the author or a steward
+            first = node.sync_with(addr, None, project=project_id)   # it must show it is the author or a steward
             s = store.state()
-            if s.join_mode != "open":
-                raise ValueError("that project takes members by invitation: ask for an invite link")
+            if s.join_mode == "closed":
+                raise ValueError("that project takes no new members")
             offer = mc.offer(mc.probe([home]), ws.machine(), s.policy.presence_ttl)
             if not offer["models"]:
                 raise ValueError("this machine offers no model yet: choose some under This machine first")
-            store.append("join", member, {"offer": offer})
-            node.sync_with(addr, None, project=project_id)
+            kind = "join" if s.join_mode == "open" else "apply"
+            store.append(kind, member, {"offer": offer, **({"note": note[:2000]} if note and kind == "apply" else {})})
+            node.sync_with(addr, first["cert"], project=project_id)   # now pinned: the same node as before
             d = ws.load()
-            d["projects"][project_id] = {**d["projects"].get(project_id, {}), "home": str(home.resolve()), "trusted": False}
+            d["projects"][project_id] = {**d["projects"].get(project_id, {}), "home": str(home.resolve()),
+                                         "trusted": False, "peers": {addr: first["cert"]}}
             ws.save(d)
             port_of(ws, project_id)
-            return {"project": project_id, "status": "joined", "name": s.project.get("name")}
+            return {"project": project_id, "status": "joined" if kind == "join" else "applied", "name": s.project.get("name")}
         except (OSError, ConnectionError, PermissionError) as err:
             last = err
     raise ValueError(f"could not reach that project's machines: {last}")

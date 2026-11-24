@@ -188,8 +188,9 @@ def access_of(store: Store, actor: str, key: str, project: str | None, token: st
     a = s.actors.get(actor)
     if a is not None and not a.revoked and a.key and a.key == key:
         return "full"
-    if s.project_id and project == s.project_id and (invites.valid(project, token) or s.join_mode == "open"):
-        return "applicant"   # an open project needs no invite to read its card and deliver a join
+    if s.project_id and project == s.project_id and s.join_mode != "closed" and \
+            (invites.valid(project, token) or s.join_mode == "open" or s.project.get("discoverable")):
+        return "applicant"   # open or discoverable projects need no invite to read the card and deliver a join/apply
     return None
 
 
@@ -611,7 +612,9 @@ class Node:
             s = self.store.state()
             if cert_fp is None and s.project_id and not any(a.key == w["key"] and not a.revoked for a in s.actors.values()):
                 raise ConnectionError(f"{addr} is not a member of this project")
-            return self._client_sync(sock, w, project if cert_fp is None else None)
+            r = self._client_sync(sock, w, project if cert_fp is None else None)
+            r["cert"] = fp
+            return r
 
     def sync_via(self, relay_addr: str, relay_fp: str, target: str, target_fp: str) -> dict:
         """Through a relay both of us reach; the target still proves its own key to us, end to end."""

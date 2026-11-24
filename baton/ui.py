@@ -407,9 +407,11 @@ def make_server(ws: Workspace, actor: str | None, host: str = "127.0.0.1", port:
                                                     limits="limits" in (urlparse(self.path).query or "")))
             if path == "/api/app":
                 cfg = ws.machine()
+                from . import update
                 return self._json(200, {"me": who(), "session": self._session(), "machine": cfg["name"],
                                         "allowed": len(cfg.get("allowed", [])), "address": ws.load().get("address", ""),
-                                        "projects": len(ws.projects()), "version": __import__("baton").__version__})
+                                        "projects": len(ws.projects()), "version": __import__("baton").__version__,
+                                        "update": update.status(ws)})
             if path == "/api/projects":
                 entries, problems = directory.entries(fresh="fresh" in (urlparse(self.path).query or ""))
                 for e in entries:
@@ -452,6 +454,10 @@ def make_server(ws: Workspace, actor: str | None, host: str = "127.0.0.1", port:
                 if path == "/api/machine":   # this machine's own settings: not an act in any project
                     if "address" in req:
                         app.set_address(ws, str(req.pop("address") or ""))
+                    if "auto_update" in req:
+                        d = ws.load()
+                        d["auto_update"] = bool(req.pop("auto_update"))
+                        ws.save(d)
                     return self._json(200, set_machine(ws, req) if req else machine_view(ws))
                 if path == "/api/me":
                     return self._json(200, {"me": app.set_me(ws, str(req.get("name", "")))})
@@ -551,6 +557,20 @@ def serve(ws: Workspace, actor: str | None, port: int = 8765, open_browser: bool
         print(f"syncing local logs with their git remotes every {sync_every:g}s", flush=True)
     if open_browser:
         threading.Timer(0.3, lambda: webbrowser.open(url)).start()
+    restart = threading.Event()
+
+    def updater():
+        from . import update
+        while True:
+            if update.auto(ws, log=lambda line: print(time.strftime("%H:%M:%S ") + line, flush=True)):
+                while any(srv.runs.running(pid) for pid in list(srv.runs.procs)):
+                    time.sleep(30)   # machines are working: restart once they stop
+                restart.set()
+                srv.shutdown()
+                return
+            time.sleep(update.EVERY)
+
+    threading.Thread(target=updater, daemon=True).start()
     try:
         srv.serve_forever()
     except KeyboardInterrupt:
@@ -558,5 +578,12 @@ def serve(ws: Workspace, actor: str | None, port: int = 8765, open_browser: bool
     finally:
         if syncer:
             syncer.stop()
-        srv.runs.stop_all()
+        if not restart.is_set():
+            srv.runs.stop_all()
         srv.server_close()
+    if restart.is_set():   # the new version takes over, on the same port; the page reconnects by itself
+        import os
+        import sys
+        args = [a for a in sys.argv[1:] if a != "--no-open"]
+        print("restarting into the new version", flush=True)
+        os.execv(sys.executable, [sys.executable, "-m", "baton", *args, *([] if "ui" in args else ["ui"]), "--no-open"])

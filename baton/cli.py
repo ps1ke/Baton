@@ -708,13 +708,21 @@ def cmd_thread(a):
 
 
 def cmd_update(a):
-    import subprocess
-    import tempfile
-    import urllib.request
-    url = "https://ps1ke.github.io/Baton/install.sh"
-    with tempfile.NamedTemporaryFile("wb", suffix=".sh", delete=False) as f:
-        f.write(urllib.request.urlopen(url, timeout=30).read())
-    return subprocess.call(["sh", f.name], env={**os.environ, "BATON_REF": a.ref})
+    from . import update
+    if not update.installed():
+        print("this baton runs from a development checkout: update it with git pull")
+        return 1
+    c = update.check(a.ref)
+    if not c["available"]:
+        print(f"baton is up to date ({(c['current'] or '?')[:7]})")
+        return 0
+    if a.check:
+        print(f"an update is available: {(c['current'] or 'unknown')[:7]} -> {c['latest'][:7]}")
+        return 0
+    version = update.apply(c["latest"])
+    update.remember(_ws(), updated_to=version, commit=c["latest"], error=None)
+    print(f"baton updated to {version} ({c['latest'][:7]}); restart baton to use it")
+    return 0
 
 
 def cmd_ui(a):
@@ -1044,8 +1052,9 @@ def main(argv=None) -> int:
     p = sub.add_parser("sync", help="exchange events with the log's git remote (once, or --every 15s)")
     p.add_argument("--remote", default="origin"); p.add_argument("--branch", help="default: the current branch")
     p.add_argument("--every", help="keep syncing at this interval, e.g. 15s"); p.set_defaults(fn=cmd_sync)
-    p = sub.add_parser("update", help="install the latest baton (runs the installer again)")
-    p.add_argument("--ref", default="main"); p.set_defaults(fn=cmd_update)
+    p = sub.add_parser("update", help="install the latest baton from GitHub (baton also does this by itself)")
+    p.add_argument("--ref", default="main"); p.add_argument("--check", action="store_true", help="only say whether there is one")
+    p.set_defaults(fn=cmd_update)
     argv = list(sys.argv[1:] if argv is None else argv)
     if not any(x in sub.choices for x in argv) and not any(x in ("-h", "--help", "--version") for x in argv):
         argv.append("ui")   # plain `baton`: open the app in the browser

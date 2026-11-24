@@ -51,7 +51,10 @@ baton
 ```
 
 The installer needs Python 3.11+ and git (Linux or macOS) and installs for your user only: the code in
-`~/.local/lib/baton`, the `baton` command in `~/.local/bin`. Run it again, or `baton update`, to update.
+`~/.local/lib/baton`, the `baton` command in `~/.local/bin`. baton keeps itself up to date from this repository: it
+checks at launch and every 6 hours, installs a new commit beside the running one, checks that it starts, swaps it in
+(keeping the previous one), and restarts itself once this machine has no work running. Turn that off on the
+*This machine* page or with `BATON_NO_UPDATE=1`; `baton update` updates by hand.
 
 `baton` opens the app in your browser, and that is where you do everything:
 

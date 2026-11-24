@@ -244,6 +244,16 @@ class Discovery(unittest.TestCase):
             self.assertEqual(newcomer.read()[0], {})
             me.sync_with(f"127.0.0.1:{nodes[0].port}", None, project=pid)
             self.assertEqual(newcomer.state().project_id, pid)
+            # a project that takes applications, but is discoverable: a stranger may read the card and apply
+            real.append("project", "human:ana", {"join": "apply", "discoverable": True}, T0 + 1)
+            other = Store(r / "new2", keyring=crypto.Keyring(r / "k4"))
+            o = p2p.Node(other, "m-other", r / "tls-other")
+            first = o.sync_with(f"127.0.0.1:{nodes[0].port}", None, project=pid)
+            self.assertEqual(first["access"], "applicant")
+            other.append("apply", "m-other", {"offer": offer(SONNET)}, T0 + 2)
+            o.sync_with(f"127.0.0.1:{nodes[0].port}", first["cert"], project=pid)
+            self.assertEqual([x.actor for x in real.state().applications.values()], ["m-other"])
+            self.assertNotIn("task", {e.kind for e in other.read()[0].values()})
         finally:
             for n in nodes:
                 n.stop()

@@ -192,6 +192,7 @@ dialog label { display: grid; gap: 4px; font-size: 12px; color: var(--muted); }
           <label>Packages at once (slots)<input id="m-slots" type="number" min="0" max="64"></label>
           <label>Address other machines reach this one at<input id="m-addr" placeholder="203.0.113.7 or my-pc.example.org" autocomplete="off"></label>
           <label style="display:flex; gap:6px; align-items:center"><input type="checkbox" id="m-share"> share hardware details</label>
+          <label style="display:flex; gap:6px; align-items:center"><input type="checkbox" id="m-update"> keep baton up to date by itself (from GitHub)</label>
         </div>
         <table class="mtable" style="margin-top:12px"><thead><tr><th>use</th><th>model</th><th>tier</th><th>plan</th></tr></thead>
           <tbody id="m-models"></tbody></table>
@@ -447,6 +448,8 @@ function renderMachine() {
   $("m-slots").value = cfg.slots ?? ""; $("m-slots").placeholder = m.suggested_slots + " suggested";
   $("m-share").checked = cfg.share_hardware !== false;
   if (appInfo && document.activeElement !== $("m-addr")) $("m-addr").value = appInfo.address || "";
+  if (appInfo && appInfo.update) { $("m-update").checked = appInfo.update.enabled; $("m-update").disabled = !appInfo.update.installed;
+    $("m-update").parentElement.title = appInfo.update.installed ? "" : "a development checkout updates with git"; }
   $("m-models").replaceChildren(...m.models.map(x => el("tr", {},
     el("td", {}, el("input", {type: "checkbox", "data-ref": x.ref, checked: x.allowed, disabled: !x.usable && !x.allowed,
       "aria-label": "use " + x.ref})),
@@ -465,7 +468,8 @@ $("m-save").addEventListener("click", async () => {
   }
   try {
     machine = await post("/api/machine", {allowed, tiers, slots: $("m-slots").value === "" ? null : +$("m-slots").value,
-      name: $("m-name").value.trim(), share_hardware: $("m-share").checked, address: $("m-addr").value.trim()});
+      name: $("m-name").value.trim(), share_hardware: $("m-share").checked, address: $("m-addr").value.trim(),
+      auto_update: $("m-update").checked});
     await startSession();
     renderMachine(); msg.replaceChildren(el("div", {class: "okmsg"}, "Saved. A running swarm announces the new offer on its next pass."));
   } catch (e) { msg.replaceChildren(el("div", {class: "err"}, e.message)); }
@@ -862,6 +866,9 @@ function renderProject() {
 }
 startSession().then(() => {
   if (appInfo && !appInfo.session) $("home-banner").replaceChildren(el("div", {class: "banner"}, "This page is read-only: open baton from this machine by running `baton` in a terminal."));
+  const u = appInfo && appInfo.update;
+  if (u && u.restart && u.updated_to && u.updated_to !== appInfo.version)
+    $("home-banner").append(el("div", {class: "banner"}, "baton " + u.updated_to + " is installed. It restarts by itself once this machine has no work running."));
   route();
 });
 </script>
