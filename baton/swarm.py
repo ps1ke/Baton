@@ -227,6 +227,11 @@ class Swarm:
         e = self.store.append("offer", self.me, body)
         s = self.store.state()
         if e.id in s.ignored:
+            if self.me not in s.actors:   # not admitted (yet, or any more): wait for it instead of failing
+                if not self.waiting:
+                    self.log(f"swarm: {self.me} is not a member: waiting to be admitted")
+                self.waiting = True
+                return
             raise ValueError(f"the project refused this machine's offer: {s.ignored[e.id]}")
         if self.last_offer is None or self.last_offer[1] != body:
             self.log(f"{self.me}: offers {len(body['models'])} model(s) "
@@ -306,8 +311,27 @@ class Swarm:
         if self.syncer:
             self.syncer.poke()
 
+    def ensure_repo(self) -> bool:
+        """This machine's clone of the project's repository, made when there is first work for it (a machine that only
+        waits to be admitted never needs it). A failed clone is logged and tried again later, not fatal."""
+        if self.repo is not None or self.ws is None or not self.store.state().project_id:
+            return True
+        from . import codeflow
+        try:
+            self.repo = codeflow.checkout(self.ws, self.store)
+            if self.repo:
+                self.log(f"swarm: works in worktrees of {self.repo}")
+            return True
+        except (RuntimeError, OSError) as err:
+            if time.time() - getattr(self, "_clone_said", 0) > 300:
+                self._clone_said = time.time()
+                self.log(f"swarm: cannot get the project's repository yet: {err}")
+            return False
+
     def start(self, job: Job) -> bool:
         if job.kind == "work":
+            if not self.ensure_repo():
+                return False
             try:
                 run = runner.Run(self.store, self.me, job.task.id, job.pick.model, self.probe, self.cfg,
                                  repo=self.repo, worktrees=self.worktrees)
@@ -340,7 +364,11 @@ class Swarm:
     def level0_duties(self, s):
         """A steward's own decisions that need no agent: propose pushing each finished root package's patch."""
         me = s.actors.get(self.me)
-        if not me or not me.level0 or not self.repo:
+        if not me or not me.level0:
+            return
+        if any(t.parent is None and t.of is None and t.outcome == "done" for t in s.tasks.values()):
+            self.ensure_repo()
+        if not self.repo:
             return
         proposed = {p.payload.get("package") for p in s.proposals.values() if p.action == "push"
                     and p.status not in ("rejected",)}
@@ -383,11 +411,6 @@ class Swarm:
         return any(s.task_status(p, t) in ("open", "taken", "checking", "waiting") for p in s.tasks.values())
 
     def run(self) -> list[tuple[str, str, str]]:
-        if self.ws is not None:
-            from . import codeflow
-            self.repo = codeflow.checkout(self.ws, self.store)
-            if self.repo:
-                self.log(f"swarm: works in worktrees of {self.repo}")
         stop_p2p = threading.Event()
         if self.p2p:
             from . import p2p as p2pmod
@@ -410,12 +433,23 @@ class Swarm:
         if self.syncer:
             self.syncer.tick()
             self.syncer.start()
-        if self.waiting:
-            self.log(f"swarm: {self.me} is not admitted yet; syncing until it is")
-            while self.waiting and not self.stopping.is_set():
-                self.tick()
-                time.sleep(self.interval)
-        self.announce(force=True)
+        while True:   # wait to be admitted (if needed), then announce; a refused offer means waiting again
+            if self.waiting:
+                self.log(f"swarm: {self.me} is not admitted yet; syncing until it is")
+                while self.waiting and not self.stopping.is_set():
+                    self.tick()
+                    time.sleep(self.interval)
+                if self.stopping.is_set():
+                    self.log("swarm: stopped before being admitted")
+                    if self.syncer:
+                        self.syncer.stop()
+                    if self.node:
+                        stop_p2p.set()
+                        self.node.stop()
+                    return self.results
+            self.announce(force=True)
+            if self.last_offer is not None:
+                break
         o = self.last_offer[1]
         self.log(f"swarm: {self.me} on {self.store.home} ({o['slots']} slot(s), max runs {self.max_runs or 'unlimited'}"
                  f"{', until nothing is left' if self.once else ''})")
