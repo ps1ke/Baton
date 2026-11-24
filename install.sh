@@ -34,7 +34,13 @@ fi
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT INT TERM
-fetch "https://codeload.github.com/$REPO/tar.gz/$REF" "$TMP/baton.tar.gz" \
+# The exact commit, so baton can tell later whether GitHub has something newer (it updates itself from there).
+COMMIT=""
+if command -v curl >/dev/null 2>&1; then
+  COMMIT="$(curl -fsSL -H 'Accept: application/vnd.github.sha' "https://api.github.com/repos/$REPO/commits/$REF" 2>/dev/null || true)"
+fi
+case "$COMMIT" in *[!0-9a-f]*|"") COMMIT="" ;; esac
+fetch "https://codeload.github.com/$REPO/tar.gz/${COMMIT:-$REF}" "$TMP/baton.tar.gz" \
   || die "could not download $REPO at $REF. Check your connection, or the BATON_REF you set."
 tar -xzf "$TMP/baton.tar.gz" -C "$TMP"
 SRC="$(find "$TMP" -mindepth 1 -maxdepth 1 -type d | head -n 1)"
@@ -43,6 +49,7 @@ SRC="$(find "$TMP" -mindepth 1 -maxdepth 1 -type d | head -n 1)"
 mkdir -p "$LIB" "$BIN"
 rm -rf "$LIB/app.new"
 cp -R "$SRC" "$LIB/app.new"
+[ -n "$COMMIT" ] && printf '%s\n' "$COMMIT" > "$LIB/app.new/.baton-commit"
 rm -rf "$LIB/app"
 mv "$LIB/app.new" "$LIB/app"
 
@@ -79,3 +86,4 @@ case ":$PATH:" in
      say "" ;;
 esac
 say "Next: run  baton  and it opens in your browser, where you set up this machine and start or join a project."
+say "baton keeps itself up to date from github.com/$REPO (turn it off on the This machine page, or BATON_NO_UPDATE=1)."
