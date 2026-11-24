@@ -355,6 +355,17 @@ A relay MUST only introduce and bridge members of its project (keys bound, not r
 bridges, their duration and their size. A relay holds the log already, and every event is signed, so it can neither
 learn nor alter anything a member could not.
 
+**UDP hole punching.** For a discoverable project, and for a machine that applied and waits to be found, each node
+keeps one UDP socket. From it, it announces itself on the DHT under the project's UDP key (the first 20 bytes of
+SHA-256(`baton-v3-udp:` + project id)) with `implied_port: 1`, so the DHT records the public address and port its
+router gave that socket, and it looks the key up and sends punch packets to every address found. Packets start with
+`BTN3` and a type: `PUNCH` (1) carries a random 8-byte nonce and the UDP key; `DATA` (2) a connection id (the first 8
+bytes of SHA-256 of the two nonces, smaller first), a 32-bit sequence number and up to 1100 bytes; `ACK` (3) the
+connection id and the next sequence number expected; `FIN` (4) the connection id. Data is retransmitted until
+acknowledged, with at most 64 packets in flight. Over the stream the node with the larger nonce is the TLS server,
+and the connection then proceeds exactly as over TCP. Two routers that both give each destination a different port
+(symmetric NAT) cannot be punched.
+
 **Local discovery.** A node of a discoverable project answers on UDP multicast group 239.255.73.42 port 7419, on each
 local network and VPN interface: to `{t: "baton-where", key}` it replies `{t: "baton-here", key, port, cert}`, where
 `key` is the first 32 hex characters of SHA-256(`baton-lan-v3:` + project id); it also sends that reply unasked now

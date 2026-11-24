@@ -183,11 +183,14 @@ def parse_invite(url: str) -> dict:
 
 
 # -- what each side may see and send ---------------------------------------------------------------------------------
-def access_of(store: Store, actor: str, key: str, project: str | None, token: str | None, invites: Invites) -> str | None:
+def access_of(store: Store, actor: str, key: str, project: str | None, token: str | None, invites: Invites,
+              pending: str | None = None) -> str | None:
     s = store.state()
     a = s.actors.get(actor)
     if a is not None and not a.revoked and a.key and a.key == key:
         return "full"
+    if pending and not s.project_id and project == pending:
+        return "pending"   # we applied and wait to be found: a steward dialling us gets our application only
     if s.project_id and project == s.project_id and s.join_mode != "closed" and \
             (invites.valid(project, token) or s.join_mode == "open" or s.project.get("discoverable")):
         return "applicant"   # open or discoverable projects need no invite to read the card and deliver a join/apply
@@ -196,7 +199,7 @@ def access_of(store: Store, actor: str, key: str, project: str | None, token: st
 
 def visible(store: Store, access: str) -> dict:
     found, _ = store.read()
-    if access == "full":
+    if access in ("full", "pending"):   # pending: all we hold is our own application
         return found
     return {i: e for i, e in found.items() if e.kind in PUBLIC_KINDS}
 
@@ -261,6 +264,7 @@ class Node:
         self.observed: str | None = None           # this node's address as its relay sees it
         self.punch_port: int | None = None         # the local port of the registration, reused to punch
         self.good: dict[str, str] = {}             # peer -> the address that last worked
+        self.pending_project: str | None = None    # a project we applied to and wait to be found for
 
     # -- TLS -----------------------------------------------------------------------------------------------------
     def _server_ctx(self):
@@ -313,7 +317,8 @@ class Node:
             send(sock, {"t": "error", "error": "the signature does not match the key"})
             return None
         actor = str(hello.get("actor", ""))
-        access = access_of(self.store, actor, key, hello.get("project"), hello.get("token"), self.invites)
+        access = access_of(self.store, actor, key, hello.get("project"), hello.get("token"), self.invites,
+                           self.pending_project)
         if access is None:
             send(sock, {"t": "error", "error": "not a member of this project and no valid invite"})
             return None
@@ -363,7 +368,7 @@ class Node:
                 self.store.put_blob(data)
                 n += 1
 
-    def _server_sync(self, sock, have: dict, access: str, actor: str):
+    def _server_sync(self, sock, have: dict, access: str, actor: str, key: str = ""):
         mine = visible(self.store, access)
         theirs = set(have.get("events", []))
         held = self.store.read()[0]
@@ -375,22 +380,37 @@ class Node:
                     "want": {"events": [i for i in theirs if i not in held], "blobs": sorted(their_blobs - my_blobs)}})
         self._send_blobs(sock, sending)
         back = _expect(recv(sock), "data")
-        got = accept(self.store, access, actor, back.get("events", []))
+        if access == "pending":   # a steward found us: keep its project's public events, once they vouch for it
+            evs = check_events(back.get("events", []))
+            got = 0
+            if vouched(evs, self.pending_project, key):
+                for e in evs:
+                    if e.kind in PUBLIC_KINDS:
+                        self.store.write(e)
+                        got += 1
+        else:
+            got = accept(self.store, access, actor, back.get("events", []))
         gotb = self._recv_blobs(sock, set(back.get("sending", [])) & (their_blobs - my_blobs))
         send(sock, {"t": "bye", "accepted": got})
         if got or gotb:
             self.log(f"p2p: {actor} sent {got} event(s), {gotb} blob(s)")
 
     def _client_sync(self, sock, w: dict, newcomer_project: str | None = None) -> dict:
+        """Exchange with the node we called. A node that is not a member of our project (an applicant we found)
+        gets only the public events, and gives us only its own application."""
         mine, _ = self.store.read()
-        my_blobs = set(self.store.blob_ids())
+        s = self.store.state()
+        limited = bool(s.project_id) and not any(a.key == w["key"] and not a.revoked for a in s.actors.values())
+        my_blobs = set() if limited else set(self.store.blob_ids())
         send(sock, {"t": "have", "events": list(mine), "blobs": sorted(my_blobs)})
         data = _expect(recv(sock), "data")
         evs = check_events(data.get("events", []))
-        announced = set(data.get("sending", [])) - my_blobs
+        announced = set() if limited else set(data.get("sending", [])) - my_blobs
         gotb = self._recv_blobs(sock, announced)
-        if newcomer_project and not self.store.state().project_id and not vouched(evs, newcomer_project, w["key"]):
+        if newcomer_project and not s.project_id and not vouched(evs, newcomer_project, w["key"]):
             raise ConnectionError("that node could not show it belongs to this project")
+        if limited:
+            evs = [e for e in evs if e.actor == w["actor"] and e.key == w["key"] and e.kind in ("apply", "join")]
         got = 0
         for e in evs:
             if e.id not in mine:
@@ -398,12 +418,12 @@ class Node:
                 got += 1
         want = data.get("want", {})
         give = [h for h in want.get("blobs", []) if h in my_blobs]
-        send(sock, {"t": "data", "events": [mine[i].to_dict() for i in want.get("events", []) if i in mine],
-                    "sending": give})
+        ids = [i for i in want.get("events", []) if i in mine and (not limited or mine[i].kind in PUBLIC_KINDS)]
+        send(sock, {"t": "data", "events": [mine[i].to_dict() for i in ids], "sending": give})
         self._send_blobs(sock, give)
         bye = _expect(recv(sock), "bye")
         return {"peer": w["actor"], "access": w["access"], "received": got, "blobs": gotb,
-                "sent": bye.get("accepted", 0)}
+                "sent": bye.get("accepted", 0), "limited": limited}
 
     # -- server --------------------------------------------------------------------------------------------------
     def _serve(self, sock, peer: str):
@@ -412,12 +432,12 @@ class Node:
         got = self._auth_server(sock, recv(sock, PRE_AUTH), self.fp)
         if got is None:
             return
-        access, actor, _ = got
+        access, actor, key = got
         sock.settimeout(SESSION)
         first = recv(sock)
         t = first.get("t")
         if t == "have":
-            return self._server_sync(sock, first, access, actor)
+            return self._server_sync(sock, first, access, actor, key)
         if access != "full" or not self.relay:
             return send(sock, {"t": "error", "error": "this node does not relay for you"})
         if t == "relay-register":
@@ -606,13 +626,11 @@ class Node:
 
     # -- client: three ways to reach a peer ------------------------------------------------------------------------
     def sync_with(self, addr: str, cert_fp: str | None, token: str | None = None, project: str | None = None) -> dict:
-        """Directly. Without `cert_fp` (an address from the DHT), the node must prove it belongs to the project."""
+        """Directly. Without `cert_fp` (an address from the DHT): a newcomer needs the node to prove it belongs to the
+        project; a member exchanges with it fully only if it is a member, and otherwise only collects its application."""
         sock, fp = self._open(addr, cert_fp)
         with sock:
             w = self._auth_client(sock, fp, project, token)
-            s = self.store.state()
-            if cert_fp is None and s.project_id and not any(a.key == w["key"] and not a.revoked for a in s.actors.values()):
-                raise ConnectionError(f"{addr} is not a member of this project")
             r = self._client_sync(sock, w, project if cert_fp is None else None)
             r["cert"] = fp
             return r

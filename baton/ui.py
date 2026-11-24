@@ -480,6 +480,8 @@ def make_server(ws: Workspace, actor: str | None, host: str = "127.0.0.1", port:
                     return self._json(200, {"me": app.set_me(ws, str(req.get("name", "")))})
                 if path == "/api/connect":
                     out = app.connect(ws, str(req.get("invite", "")), str(req.get("note", "")))
+                    if out["status"] == "waiting":   # start being findable right away
+                        runs.start(out["project"], Path(ws.projects()[out["project"]]["home"]))
                     directory.entries(fresh=True)
                     return self._json(200, {**out, "key": out["project"]})
                 actor = who()

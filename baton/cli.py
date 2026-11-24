@@ -374,7 +374,7 @@ def cmd_swarm(a):
     me = _actor(a)
     s = store.state()
     p = _probe(a)
-    if me not in s.actors:
+    if me not in s.actors and not (a.p2p and not s.project_id):   # applied and waiting to be found: just run
         from . import machine as mc
         o = mc.offer(p, cfg, store.policy().presence_ttl)
         if s.join_mode != "open":
@@ -386,7 +386,7 @@ def cmd_swarm(a):
     logs = Path(a.transcripts) if a.transcripts else store.home / "runs"
     p2p_cfg = None
     if a.p2p:
-        p2p_cfg = {"listen": a.p2p, "advertise": a.advertise, "every": pol.duration(a.p2p_every),
+        p2p_cfg = {"listen": a.p2p, "advertise": a.advertise, "every": pol.duration(a.p2p_every), "project_id": a.project_id,
                    "peers": dict(x.split("=", 1) for x in (a.peer or [])), "nat": not a.no_nat,
                    "relay": not a.no_relay, "dht": not a.no_dht}
     sw = swarm.Swarm(store, me, cfg, p, max_runs=a.max_runs, timeout=pol.duration(a.timeout) if a.timeout else None,
@@ -965,6 +965,7 @@ def main(argv=None) -> int:
     p.add_argument("--advertise", metavar="HOST:PORT", help="the address other machines use to reach it")
     p.add_argument("--peer", action="append", metavar="HOST:PORT=CERT", help="a node to reach before offers name any")
     p.add_argument("--p2p-every", default="5s", help="how often to exchange with every peer")
+    p.add_argument("--project-id", help="the project this log is for, while it has only our application")
     p.add_argument("--no-nat", action="store_true", help="do not ask the router to forward the port")
     p.add_argument("--no-relay", action="store_true", help="do not relay for members behind routers")
     p.add_argument("--no-dht", action="store_true", help="never use the DHT, even for a discoverable project")

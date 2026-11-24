@@ -199,7 +199,9 @@ class FakeDHT:
                     if self.peers:
                         r[b"values"] = [socket.inet_aton(ip) + struct.pack(">H", p) for ip, p in self.peers]
             elif q[b"q"] == b"announce_peer" and i == 1 and q[b"a"][b"token"] == b"tok":
-                self.peers.append((src[0], q[b"a"][b"port"]))
+                port = src[1] if q[b"a"].get(b"implied_port") else q[b"a"][b"port"]   # BEP 5: the sender's port
+                if (src[0], port) not in self.peers:
+                    self.peers.append((src[0], port))
             s.sendto(dht.bencode({b"t": q[b"t"], b"y": b"r", b"r": r}), src)
 
     def close(self):
@@ -279,3 +281,68 @@ class Discovery(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Punching(unittest.TestCase):
+    """Two machines that only know a project id meet through the DHT and talk over punched UDP."""
+
+    def setUp(self):
+        from baton import udp
+        self.udp = udp
+        self.tmp = tempfile.TemporaryDirectory()
+        r = Path(self.tmp.name)
+        self.net = FakeDHT()
+        self.steward_store = Store(r / "s", keyring=crypto.Keyring(r / "ks"))
+        self.steward_store.init()
+        (self.steward_store.home / "policy.toml").write_text(POLICY, encoding="utf-8")
+        s = self.steward_store
+        self.pid = s.append("project", "human:ana", {"name": "app", "repo": REPO, "join": "apply", "discoverable": True}, T0).id
+        s.append("grant", "human:ana", {"to": "m-s", "key": s.keyring.public("m-s"), "right": "steward"}, T0 + 1)
+        self.joiner_store = Store(r / "j", keyring=crypto.Keyring(r / "kj"))
+        self.joiner_store.init()
+        self.joiner_store.append("apply", "m-j", {"offer": offer(SONNET), "note": "from far away"}, T0 + 2)
+        self.sn = p2p.Node(s, "m-s", r / "ts")
+        self.jn = p2p.Node(self.joiner_store, "m-j", r / "tj")
+        self.jn.pending_project = self.pid
+        boot = [self.net.addr(0)]
+        self.hubs = [udp.Hub(self.sn, self.pid, bootstrap=boot), udp.Hub(self.jn, self.pid, bootstrap=boot)]
+
+    def tearDown(self):
+        for h in self.hubs:
+            h.close()
+        self.net.close()
+        self.tmp.cleanup()
+
+    def wait_for(self, cond, seconds=20):
+        end = time.time() + seconds
+        while time.time() < end:
+            if cond():
+                return True
+            time.sleep(0.2)
+        return False
+
+    def test_an_applicant_and_a_steward_meet_by_project_id_alone(self):
+        for h in self.hubs:   # both announce, then both look each other up and punch
+            h.round()
+        for h in self.hubs:
+            h.round()
+        self.assertTrue(self.wait_for(lambda: self.steward_store.state().applications), "the application did not arrive")
+        self.assertEqual([a.actor for a in self.steward_store.state().applications.values()], ["m-j"])
+        self.assertTrue(self.wait_for(lambda: self.joiner_store.state().project_id == self.pid))
+        self.assertNotIn("task", {e.kind for e in self.joiner_store.read()[0].values()})   # the card only
+
+    def test_the_stream_survives_packet_loss(self):
+        import random
+        s = self.steward_store
+        s.append("grant", "human:ana", {"to": "m-j", "key": self.joiner_store.keyring.public("m-j"), "right": "member"}, T0 + 3)
+        self.joiner_store.merge_from(s)
+        self.jn.pending_project = None
+        blob = s.put_blob(random.randbytes(300_000))
+        for h in self.hubs:   # one in five packets is lost
+            orig = h.raw
+            h.raw = (lambda o: lambda addr, payload: None if random.random() < 0.2 else o(addr, payload))(orig)
+        for h in self.hubs:
+            h.round()
+        for h in self.hubs:
+            h.round()
+        self.assertTrue(self.wait_for(lambda: self.joiner_store.blob(blob) is not None, 60), "the blob did not arrive")

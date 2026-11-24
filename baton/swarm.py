@@ -145,13 +145,49 @@ class Swarm:
                 inner.set()
             stop.wait(5)
 
+    def _udp(self, stop: threading.Event):
+        """Hole punching over UDP, like torrent clients: for a discoverable project, or while waiting to be found."""
+        from . import udp
+        hub = None
+        while not stop.is_set():
+            s = self.store.state()
+            pid = s.project_id or self.p2p.get("project_id")
+            want = bool(pid) and (s.project.get("discoverable") or not s.project_id)
+            if want and hub is None:
+                hub = udp.Hub(self.node, pid, bootstrap=self.p2p.get("bootstrap"), log=self.log)
+                self.log(f"swarm: UDP hole punching through the DHT (port {hub.port})")
+            elif not want and hub is not None:
+                hub.close()
+                hub = None
+            if hub is not None:
+                try:
+                    hub.round()
+                except OSError as err:
+                    self.log(f"swarm: UDP: {err}")
+            stop.wait(30 if not s.project_id else 60)
+        if hub is not None:
+            hub.close()
+
     def _dht(self, port: int, stop: threading.Event):
         """A discoverable project: announce this node on the local networks and on the DHT, and look peers up there
         when none answer."""
         from . import dht, lan
         beacon = None
+        tried: dict[str, float] = {}
         while not stop.is_set():
             s = self.store.state()
+            if not s.project_id and self.p2p.get("project_id"):   # waiting to be found: announce, if reachable
+                if self.p2p.get("advertise"):
+                    try:
+                        dht.find(self.p2p["project_id"], announce_port=port)
+                        self.log("swarm: announced on the DHT; a steward of the project can now find this machine")
+                    except OSError as err:
+                        self.log(f"swarm: DHT: {err}")
+                else:
+                    self.log("swarm: waiting to be found, but no address the internet can reach: ask a steward for "
+                             "an invite, or use a network or VPN you share with one")
+                stop.wait(300)
+                continue
             if s.project.get("discoverable") and beacon is None:
                 beacon = lan.Beacon(s.project_id, port, self.node.fp).start()
                 self.log("swarm: announcing this project on the local networks and VPNs this machine is on")
@@ -165,18 +201,20 @@ class Swarm:
                                  "(forward the port, set this machine's address, or add a reachable member)")
                     found = dht.find(s.project_id, announce_port=port if self.p2p.get("advertise") else None)
                     known = {p.get("addr") for p in self.node.peers().values()}
-                    ok = any(v.get("ok") for v in self.node.status.values())
-                    for ip, prt in found[:8]:
+                    for ip, prt in found[:16]:
                         addr = f"{ip}:{prt}"
-                        if not ok and addr not in known and addr != self.p2p.get("advertise"):
-                            try:
-                                self.node.sync_with(addr, None)   # unpinned: it must prove it is a member
-                                self.log(f"swarm: found a member at {addr} through the DHT")
-                            except Exception:
-                                pass
+                        if addr in known or addr == self.p2p.get("advertise") or time.time() - tried.get(addr, 0) < 600:
+                            continue
+                        tried[addr] = time.time()
+                        try:   # a member syncs fully; anyone else only hands over its application
+                            r = self.node.sync_with(addr, None)
+                            self.log(f"swarm: reached {r['peer']} at {addr} through the DHT"
+                                     + (" (an applicant: collected its application)" if r.get("limited") else ""))
+                        except Exception:
+                            pass
                 except OSError as err:
                     self.log(f"swarm: DHT: {err}")
-            stop.wait(900)
+            stop.wait(120)
         if beacon is not None:
             beacon.close()
 
@@ -354,6 +392,8 @@ class Swarm:
             from . import p2p as p2pmod
             self.node = p2pmod.Node(self.store, self.me, Path(self.ws.dir) / "tls", log=self.log)
             host, _, port = self.p2p.get("listen", "0.0.0.0:7420").rpartition(":")
+            if not self.store.state().project_id and self.p2p.get("project_id"):
+                self.node.pending_project = self.p2p["project_id"]   # we applied; stewards may find and dial us
             port = self.node.serve(host, int(port))
             self.peer_port = port
             self.node.addr = self.p2p.get("advertise")
@@ -364,6 +404,7 @@ class Swarm:
             threading.Thread(target=self.node.run, args=(self.p2p.get("every", 5.0), stop_p2p), daemon=True).start()
             if self.p2p.get("dht", True):
                 threading.Thread(target=self._dht, args=(port, stop_p2p), daemon=True).start()
+                threading.Thread(target=self._udp, args=(stop_p2p,), daemon=True).start()
             self.log(f"swarm: peer node on {self.p2p.get('listen')} (certificate {self.node.fp[:16]}…)")
         if self.syncer:
             self.syncer.tick()

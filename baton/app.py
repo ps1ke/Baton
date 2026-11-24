@@ -128,11 +128,12 @@ def connect(ws: Workspace, invite: str, note: str = "") -> dict:
         addrs = [a for a, _ in lan.find(invite)]
         if not addrs:
             addrs = find_by_id(invite)
-        if not addrs:
-            raise ValueError("no machine of that project answers on your networks or on the DHT right now. Its "
-                             "stewards must be running baton, and reachable: on your network or VPN, or with a "
-                             "forwarded port. An invite link from them works too.")
-        return _connect_unpinned(ws, invite, addrs, note)
+        if addrs:
+            try:
+                return _connect_unpinned(ws, invite, addrs, note)
+            except ValueError:
+                pass
+        return _wait_to_be_found(ws, invite, note)   # like a torrent: whoever can be reached gets dialled
     inv = p2p.parse_invite(invite)
     home = ws.dir / "projects" / inv["project"][:16]
     store = Store(home)
@@ -187,6 +188,27 @@ def _connect_unpinned(ws: Workspace, project_id: str, addrs: list[str], note: st
         except (OSError, ConnectionError, PermissionError) as err:
             last = err
     raise ValueError(f"could not reach that project's machines: {last}")
+
+
+def _wait_to_be_found(ws: Workspace, project_id: str, note: str) -> dict:
+    """Nobody of the project answers right now: apply anyway, and let this machine be found. Its swarm announces it
+    under the project's id, and a steward that comes online dials it, takes the application, and syncs again once
+    it is admitted."""
+    home = ws.dir / "projects" / project_id[:16]
+    store = Store(home)
+    store.init()
+    member = ws.machine()["name"]
+    offer = mc.offer(mc.probe([home]), ws.machine(), 180.0)
+    if not offer["models"]:
+        raise ValueError("this machine offers no model yet: choose some under This machine first")
+    if not any(e.kind == "apply" and e.actor == member for e in store.read()[0].values()):
+        store.append("apply", member, {"offer": offer, **({"note": note[:2000]} if note else {})})
+    d = ws.load()
+    d["projects"][project_id] = {**d["projects"].get(project_id, {}), "home": str(home.resolve()), "trusted": False,
+                                 "pending": True}
+    ws.save(d)
+    port_of(ws, project_id)
+    return {"project": project_id, "status": "waiting", "name": None}
 
 
 def set_discoverable(store: Store, actor: str, on: bool):
@@ -278,7 +300,7 @@ class Runs:
         address = d.get("address")
         entry = d["projects"].get(project_id, {})
         cmd = [sys.executable, "-m", "baton", "--home", str(home), "swarm", "--p2p", f"0.0.0.0:{port}",
-               "--max-runs", str(int(max_runs)), "--interval", "3s"]
+               "--max-runs", str(int(max_runs)), "--interval", "3s", "--project-id", project_id]
         if address:
             cmd += ["--advertise", f"{address}:{port}"]
         for addr, fp in (entry.get("peers") or {}).items():

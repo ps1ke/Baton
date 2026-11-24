@@ -604,6 +604,10 @@ $("np-go").addEventListener("click", () => startAction($("np-go"), $("np-msg"), 
 }));
 $("cn-go").addEventListener("click", () => startAction($("cn-go"), $("cn-msg"), async () => {
   const out = await post("/api/connect", {invite: $("cn-link").value, note: $("cn-note").value});
+  if (out.status === "waiting") {
+    $("cn-msg").replaceChildren(el("div", {class: "okmsg"}, "Nobody of that project answers right now, so this machine applied and is waiting to be found. It stays findable while baton runs; when a steward comes online it reaches this machine, and the project appears in your list."));
+    return;
+  }
   $("cn-msg").replaceChildren(el("div", {class: "okmsg"}, out.status === "applied" ? "Applied to " + out.name + ". Start this machine on its page; it waits until a steward admits it." : "You are in " + out.name + "."));
   await refreshDir(true); go(out.key);
 }));
